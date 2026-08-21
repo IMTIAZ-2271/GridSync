@@ -209,6 +209,9 @@ class Bill(BaseModel):
     period_start: date
     period_end: date
     coverage_pct: Decimal | None
+    total_import_kwh: Energy
+    total_export_kwh: Energy
+    total_generation_kwh: Energy
     currency: str
     energy_charge: Money
     export_credit_earned: Money

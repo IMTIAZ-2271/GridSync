@@ -2,7 +2,6 @@ import { Navigate, Route, Routes } from "react-router-dom";
 
 import Layout from "./components/Layout";
 import CustomerOverview from "./routes/CustomerOverview";
-import CustomerReadings from "./routes/CustomerReadings";
 import CustomerBills from "./routes/CustomerBills";
 import CustomerIssues from "./routes/CustomerIssues";
 import WorkerOrders from "./routes/WorkerOrders";
@@ -25,7 +24,6 @@ export default function App() {
 
         <Route path="customer">
           <Route index element={<CustomerOverview />} />
-          <Route path="readings" element={<CustomerReadings />} />
           <Route path="bills" element={<CustomerBills />} />
           <Route path="issues" element={<CustomerIssues />} />
         </Route>

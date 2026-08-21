@@ -107,7 +107,12 @@ export interface Bill {
   period_id: string;
   period_start: DateOnly;
   period_end: DateOnly;
+  /** Share of expected intervals actually received. Below 100 is worth saying. */
   coverage_pct: Decimal | null;
+  /** The period's metered totals, frozen when it was billed. */
+  total_import_kwh: Decimal;
+  total_export_kwh: Decimal;
+  total_generation_kwh: Decimal;
   currency: string;
   energy_charge: Decimal;
   export_credit_earned: Decimal;
