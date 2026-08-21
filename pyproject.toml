@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Async tests are the norm here (asyncpg), so don't require a marker on each.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
