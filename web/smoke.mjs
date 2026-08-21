@@ -1,97 +1,133 @@
 /**
- * Headless render check.
+ * Headless render check, one pass per role.
  *
- * Renders the real customer pages to a string against the live API, so a crash
- * in component logic or a bad field name shows up here instead of as a blank
- * screen in the demo. Recharts' ResponsiveContainer measures the DOM and so
- * draws nothing under SSR -- this checks the page around the chart, not the
- * plotted geometry.
+ * Signs in with each demo account, prefetches what that role's landing page
+ * reads, and renders it to a string against the live API. Catches crashes in
+ * component logic and mismatched field names, which is otherwise a blank
+ * screen in the browser.
  *
- * Run with the API up:  node smoke.mjs
+ * Recharts' ResponsiveContainer measures the DOM, so it draws nothing under
+ * SSR -- this checks the page around the chart, not the plotted geometry.
+ *
+ *   node smoke.mjs      (with the API up on :8000)
  */
 import { renderToString } from "react-dom/server";
 import { createElement as h } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { setToken } from "./src/lib/api.ts";
 import CustomerOverview from "./src/routes/CustomerOverview.tsx";
 import CustomerBills from "./src/routes/CustomerBills.tsx";
 import CustomerIssues from "./src/routes/CustomerIssues.tsx";
+import WorkerOrders from "./src/routes/WorkerOrders.tsx";
+import GovernmentAgreements from "./src/routes/GovernmentAgreements.tsx";
+import SupplierSites from "./src/routes/SupplierSites.tsx";
 
 const API = "http://127.0.0.1:8000";
+const PASSWORD = "demo1234";
 
-// The client calls relative /api paths; point them at the running server.
 const realFetch = globalThis.fetch;
 globalThis.fetch = (url, init) =>
-  realFetch(url.startsWith("/") ? `${API}${url}` : url, init);
+  realFetch(typeof url === "string" && url.startsWith("/") ? `${API}${url}` : url, init);
 
-const sites = await (await fetch("/api/sites")).json();
-const solar = sites.find((s) => s.has_solar);
-console.log(`demo site: ${solar.label} (${solar.district}), solar=${solar.has_solar}`);
+let token = null;
+const get = (path) =>
+  fetch(`/api${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  }).then((r) => r.json());
 
-const PAGES = {
-  CustomerOverview,
-  CustomerBills,
-  CustomerIssues,
-};
+async function signIn(email) {
+  const res = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password: PASSWORD }),
+  });
+  if (!res.ok) throw new Error(`login ${email} -> ${res.status}`);
+  const body = await res.json();
+  token = body.access_token;
+  setToken(token); // so the components' own fetches carry it too
+  return body.account;
+}
+
+function strip(html) {
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-z]+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const CASES = [
+  {
+    email: "customer@demo.com",
+    pages: { CustomerOverview, CustomerBills, CustomerIssues },
+    async prime(qc) {
+      const sites = await get("/sites");
+      const id = sites[0].site_id;
+      qc.setQueryData(["sites"], sites);
+      qc.setQueryData(["sites", id, "summary"], await get(`/sites/${id}/summary`));
+      qc.setQueryData(["sites", id, "readings", 7], await get(`/sites/${id}/readings?days=7`));
+      qc.setQueryData(["sites", id, "bills"], await get(`/sites/${id}/bills`));
+      qc.setQueryData(["issues"], await get("/issues"));
+      return `owns ${sites.length} site(s): ${sites.map((s) => s.label).join(", ")}`;
+    },
+  },
+  {
+    email: "worker@demo.com",
+    pages: { WorkerOrders },
+    async prime(qc) {
+      const wos = await get("/work-orders");
+      qc.setQueryData(["work-orders"], wos);
+      qc.setQueryData(["issues"], await get("/issues"));
+      return `${wos.length} assigned work orders`;
+    },
+  },
+  {
+    email: "gov@demo.com",
+    pages: { GovernmentAgreements },
+    async prime(qc) {
+      const pend = await get("/agreements/pending");
+      qc.setQueryData(["agreements", "pending"], pend);
+      qc.setQueryData(["analytics", "by-area"], await get("/analytics/by-area"));
+      return `${pend.length} pending agreements`;
+    },
+  },
+  {
+    email: "supplier@demo.com",
+    pages: { SupplierSites },
+    async prime(qc) {
+      const sites = await get("/sites");
+      qc.setQueryData(["sites"], sites);
+      return `sees ${sites.length} sites`;
+    },
+  },
+];
 
 let failed = false;
 
-for (const [name, Page] of Object.entries(PAGES)) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+for (const c of CASES) {
+  const account = await signIn(c.email);
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const note = await c.prime(qc);
+  console.log(`\n### ${c.email}  role=${account.role}  ${note}`);
 
-  // Prime the cache the way the live page would, so the render sees data
-  // rather than only its loading state.
-  await client.prefetchQuery({
-    queryKey: ["sites"],
-    queryFn: () => fetch("/api/sites").then((r) => r.json()),
-  });
-  await client.prefetchQuery({
-    queryKey: ["sites", solar.site_id, "summary"],
-    queryFn: () =>
-      fetch(`/api/sites/${solar.site_id}/summary`).then((r) => r.json()),
-  });
-  await client.prefetchQuery({
-    queryKey: ["sites", solar.site_id, "readings", 7],
-    queryFn: () =>
-      fetch(`/api/sites/${solar.site_id}/readings?days=7`).then((r) => r.json()),
-  });
-  await client.prefetchQuery({
-    queryKey: ["sites", solar.site_id, "bills"],
-    queryFn: () =>
-      fetch(`/api/sites/${solar.site_id}/bills`).then((r) => r.json()),
-  });
-  await client.prefetchQuery({
-    queryKey: ["issues"],
-    queryFn: () => fetch("/api/issues").then((r) => r.json()),
-  });
-
-  try {
-    const html = renderToString(
-      h(
-        QueryClientProvider,
-        { client },
+  for (const [name, Page] of Object.entries(c.pages)) {
+    try {
+      const html = renderToString(
         h(
-          MemoryRouter,
-          { initialEntries: [`/customer?site=${solar.site_id}`] },
-          h(Page, null),
+          QueryClientProvider,
+          { client: qc },
+          h(MemoryRouter, { initialEntries: ["/"] }, h(Page, null)),
         ),
-      ),
-    );
-    const text = html
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&[a-z]+;/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    console.log(`\n--- ${name} (${html.length} bytes) ---`);
-    console.log(text.slice(0, 700));
-  } catch (err) {
-    failed = true;
-    console.error(`\n--- ${name} FAILED ---`);
-    console.error(err);
+      );
+      console.log(`  ${name}: ${strip(html).slice(0, 260)}`);
+    } catch (err) {
+      failed = true;
+      console.error(`  ${name} FAILED: ${err.message}`);
+    }
   }
 }
 
+setToken(null);
 process.exit(failed ? 1 : 0);
