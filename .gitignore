@@ -7,3 +7,7 @@ node_modules/
 CLAUDE.md
 docs/
 .venv/
+
+# Frontend
+web/node_modules/
+web/dist/

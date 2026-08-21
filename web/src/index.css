@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+/* Portal accents. Each portal gets one hue so the switcher is legible at a
+   glance and a screenshot is self-identifying. */
+@theme {
+  --color-portal-customer: oklch(0.62 0.15 250);
+  --color-portal-worker: oklch(0.65 0.16 60);
+  --color-portal-government: oklch(0.58 0.14 150);
+  --color-portal-supplier: oklch(0.60 0.16 320);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
