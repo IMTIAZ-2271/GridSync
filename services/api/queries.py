@@ -11,7 +11,8 @@ runtime, so there is nothing to gain from re-reading it per request.
 """
 from pathlib import Path
 
-SQL_PATH = Path(__file__).resolve().parents[2] / "db" / "sql" / "api_queries.sql"
+SQL_DIR = Path(__file__).resolve().parents[2] / "db" / "sql"
+SQL_FILES = (SQL_DIR / "api_queries.sql", SQL_DIR / "auth_queries.sql")
 
 _NAME_MARKER = "-- name:"
 
@@ -48,7 +49,26 @@ def _load(path: Path) -> dict[str, str]:
     return statements
 
 
-QUERIES: dict[str, str] = _load(SQL_PATH)
+def _load_all() -> dict[str, str]:
+    """Merge every SQL file into one namespace.
+
+    Names are global across the files, and a collision raises rather than
+    letting one file silently shadow the other -- two statements answering to
+    the same name is a bug whichever one wins.
+    """
+    merged: dict[str, str] = {}
+    for path in SQL_FILES:
+        for name, body in _load(path).items():
+            if name in merged:
+                raise ValueError(
+                    f"{path.name}: statement '{name}' is already defined in "
+                    "another SQL file"
+                )
+            merged[name] = body
+    return merged
+
+
+QUERIES: dict[str, str] = _load_all()
 
 
 def sql(name: str) -> str:

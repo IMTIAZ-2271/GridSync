@@ -1,15 +1,20 @@
 """GridSync dashboard API.
 
-Read-mostly HTTP surface over the GridSync database for the React client. No
-auth yet -- this is a portfolio build and every endpoint is open; the pieces
-that would need authorization (which account may see which site, who may
-approve a net-metering agreement) are marked where they arise.
+Read-mostly HTTP surface over the GridSync database for the React client.
 
-Two conventions govern everything below.
+Three conventions govern everything below.
 
-**Raw SQL, no ORM.** Statements live in `db/sql/api_queries.sql` and are
-reached by name through `queries.sql()`. Handlers translate rows into response
-models and do nothing else -- no query construction in Python.
+**Every endpoint is authenticated, and authorization has two layers.**
+`require_role(...)` decides whether a role may call an endpoint at all;
+`visible_site_or_404` decides whether this particular caller may see this
+particular row. Both are needed -- a customer may legitimately call
+/summary, but only for a site they own. Row scoping is done by selecting a
+narrower statement, not by filtering a full result set, so a row the caller
+may not see is never fetched. See services/api/auth.py.
+
+**Raw SQL, no ORM.** Statements live in `db/sql/*.sql` and are reached by name
+through `queries.sql()`. Handlers translate rows into response models and do
+nothing else -- no query construction in Python.
 
 **Money and energy cross the wire as strings.** Postgres NUMERIC arrives as
 Decimal, and rule 5 forbids FLOAT for money and energy. Serializing a Decimal
@@ -37,7 +42,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, PlainSerializer
 
+from .auth import CurrentAccount, Principal, require_role
 from .queries import sql
+from .routes_auth import router as auth_router
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -110,8 +117,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# The Vite dev server. Open because there is no auth and no cookie to protect;
-# this list is the thing to revisit first when auth lands.
+# The Vite dev server. Credentials are carried in an Authorization header
+# rather than a cookie, so this list is what stops another origin's script from
+# reading responses on a logged-in user's behalf -- keep it exact.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -128,6 +136,10 @@ async def get_conn() -> AsyncIterator[asyncpg.Connection]:
 
 
 Conn = Annotated[asyncpg.Connection, Depends(get_conn)]
+
+# /api/auth/* is the only unauthenticated surface: register, login, and the
+# /me probe (which authenticates itself).
+app.include_router(auth_router)
 
 
 # --------------------------------------------------------------------------
@@ -259,11 +271,10 @@ IssueSeverity = Literal["low", "medium", "high", "critical"]
 class IssueCreate(BaseModel):
     """A new issue.
 
-    reported_by_account_id is optional and defaults to the site's owner, since
-    there is no auth to infer a reporter from and the column is NOT NULL. That
-    also means a client can currently file an issue as anyone, which is the
-    single largest thing this API is missing -- the field comes off the body
-    and out of the session when auth lands.
+    There is deliberately no reporter field. The reporter is the authenticated
+    caller, taken from the token in the handler -- accepting it from the body
+    would let anyone file an issue as anyone, which is exactly what this
+    endpoint allowed before auth existed.
     """
 
     site_id: UUID
@@ -272,7 +283,6 @@ class IssueCreate(BaseModel):
     description: str | None = None
     severity: IssueSeverity = "medium"
     priority: int = Field(default=3, ge=1, le=5)
-    reported_by_account_id: UUID | None = None
     device_id: UUID | None = None
     bill_id: UUID | None = None
 
@@ -353,17 +363,87 @@ class AreaStats(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Authorization helpers
+#
+# require_role() answers "may this role call this endpoint at all". These
+# answer the narrower question: "may this caller see THIS row". Both are
+# needed -- a customer may legitimately call /summary, but only for a site
+# they own.
+# --------------------------------------------------------------------------
+
+async def visible_site_or_404(
+    conn: asyncpg.Connection,
+    principal: Principal,
+    site_id: UUID,
+) -> None:
+    """Raise unless this caller may read this site.
+
+    404 rather than 403 for a site that exists but belongs to someone else.
+    403 would confirm the site exists, which turns this endpoint into a probe
+    for which meters are registered. The caller cannot act on the difference
+    either way.
+    """
+    not_found = HTTPException(status_code=404, detail="site not found")
+
+    if principal.sees_every_site:
+        if not await conn.fetchval("SELECT 1 FROM site WHERE site_id = $1", site_id):
+            raise not_found
+        return
+
+    if principal.role == "consumer":
+        if not await conn.fetchval(
+            sql("account_owns_site"), site_id, principal.account_id
+        ):
+            raise not_found
+        return
+
+    if principal.role == "worker":
+        # A worker sees a site for as long as an assignment ties them to it.
+        if not await conn.fetchval(
+            sql("worker_covers_site"), site_id, principal.account_id
+        ):
+            raise not_found
+        return
+
+    raise not_found
+
+
+# --------------------------------------------------------------------------
 # Sites
 # --------------------------------------------------------------------------
 
 @app.get("/api/sites", response_model=list[Site], tags=["sites"])
-async def list_sites(conn: Conn) -> list[Site]:
-    rows = await conn.fetch(sql("list_sites"))
+async def list_sites(conn: Conn, principal: CurrentAccount) -> list[Site]:
+    """Sites this caller may see.
+
+    Government and supplier get the fleet; a customer gets the sites they own.
+    The narrowing is a different statement rather than a filter over the full
+    list, so rows the caller may not see are never fetched.
+    """
+    if principal.sees_every_site:
+        rows = await conn.fetch(sql("list_sites"))
+    elif principal.role == "consumer":
+        rows = await conn.fetch(sql("sites_for_account"), principal.account_id)
+    else:
+        # Workers reach sites through their work orders; no field task starts
+        # from "browse every site".
+        raise HTTPException(
+            status_code=403,
+            detail="this endpoint is not available to role 'worker'",
+        )
     return [Site(**dict(r)) for r in rows]
 
 
 @app.get("/api/sites/{site_id}/summary", response_model=SiteSummary, tags=["sites"])
-async def site_summary(conn: Conn, site_id: UUID) -> SiteSummary:
+async def site_summary(
+    conn: Conn,
+    site_id: UUID,
+    principal: Annotated[
+        Principal,
+        Depends(require_role("consumer", "government", "supplier", "admin")),
+    ],
+) -> SiteSummary:
+    await visible_site_or_404(conn, principal, site_id)
     row = await conn.fetchrow(sql("site_summary"), site_id)
     if row is None:
         raise HTTPException(status_code=404, detail="site not found")
@@ -415,20 +495,28 @@ async def site_summary(conn: Conn, site_id: UUID) -> SiteSummary:
 async def site_readings(
     conn: Conn,
     site_id: UUID,
+    principal: CurrentAccount,
     days: Annotated[int, Query(ge=1, le=90, description="Trailing window in days")] = 7,
 ) -> list[Reading]:
-    # 404 on an unknown site rather than returning [], which a client would
-    # otherwise read as "this site is silent" -- a very different alarm.
-    if not await conn.fetchval("SELECT 1 FROM site WHERE site_id = $1", site_id):
-        raise HTTPException(status_code=404, detail="site not found")
+    # Workers may read telemetry for a site they are dispatched to -- a data
+    # gap or a dead inverter is diagnosed from exactly this series.
+    await visible_site_or_404(conn, principal, site_id)
     rows = await conn.fetch(sql("site_readings"), site_id, days)
     return [Reading(**dict(r)) for r in rows]
 
 
 @app.get("/api/sites/{site_id}/bills", response_model=list[Bill], tags=["sites"])
-async def site_bills(conn: Conn, site_id: UUID) -> list[Bill]:
-    if not await conn.fetchval("SELECT 1 FROM site WHERE site_id = $1", site_id):
-        raise HTTPException(status_code=404, detail="site not found")
+async def site_bills(
+    conn: Conn,
+    site_id: UUID,
+    principal: Annotated[
+        Principal,
+        Depends(require_role("consumer", "government", "supplier", "admin")),
+    ],
+) -> list[Bill]:
+    # Deliberately unavailable to workers: what a household was charged is not
+    # something a field visit needs to know.
+    await visible_site_or_404(conn, principal, site_id)
 
     # Two queries, not one with json_agg: nesting the line items in JSON would
     # push rate_applied and amount through a JSON number and lose exactness.
@@ -440,10 +528,7 @@ async def site_bills(conn: Conn, site_id: UUID) -> list[Bill]:
         d = dict(r)
         items.setdefault(d.pop("bill_id"), []).append(BillLineItem(**d))
 
-    return [
-        Bill(**dict(r), line_items=items.get(r["bill_id"], []))
-        for r in bill_rows
-    ]
+    return [Bill(**dict(r), line_items=items.get(r["bill_id"], [])) for r in bill_rows]
 
 
 # --------------------------------------------------------------------------
@@ -451,17 +536,34 @@ async def site_bills(conn: Conn, site_id: UUID) -> list[Bill]:
 # --------------------------------------------------------------------------
 
 @app.get("/api/issues", response_model=list[Issue], tags=["operations"])
-async def list_issues(conn: Conn) -> list[Issue]:
-    rows = await conn.fetch(sql("list_issues"))
+async def list_issues(conn: Conn, principal: CurrentAccount) -> list[Issue]:
+    if principal.sees_every_site:
+        rows = await conn.fetch(sql("list_issues"))
+    elif principal.role == "consumer":
+        rows = await conn.fetch(sql("issues_for_account"), principal.account_id)
+    else:
+        rows = await conn.fetch(sql("issues_for_worker"), principal.account_id)
     return [Issue(**dict(r)) for r in rows]
 
 
 @app.post("/api/issues", response_model=Issue, status_code=201, tags=["operations"])
-async def create_issue(conn: Conn, payload: IssueCreate) -> Issue:
+async def create_issue(
+    conn: Conn,
+    payload: IssueCreate,
+    principal: CurrentAccount,
+) -> Issue:
+    """File an issue against a site the caller can see.
+
+    The reporter comes from the token, never from the body. That closes the
+    hole this endpoint had before auth existed, where any client could file an
+    issue as any account.
+    """
+    await visible_site_or_404(conn, principal, payload.site_id)
+
     try:
         issue_id = await conn.fetchval(
             sql("create_issue"),
-            payload.reported_by_account_id,
+            principal.account_id,
             payload.site_id,
             payload.device_id,
             payload.bill_id,
@@ -472,8 +574,8 @@ async def create_issue(conn: Conn, payload: IssueCreate) -> Issue:
             payload.priority,
         )
     except asyncpg.ForeignKeyViolationError as exc:
-        # A bad site_id, account_id, device_id or bill_id is the client's
-        # mistake, not a server fault. constraint_name names which one.
+        # site_id is already validated above, so this is a bad device_id or
+        # bill_id. constraint_name names which.
         raise HTTPException(
             status_code=422,
             detail=f"unknown reference: {exc.constraint_name}",
@@ -496,8 +598,17 @@ def _work_order(row: asyncpg.Record) -> WorkOrder:
 
 
 @app.get("/api/work-orders", response_model=list[WorkOrder], tags=["operations"])
-async def list_work_orders(conn: Conn) -> list[WorkOrder]:
-    rows = await conn.fetch(sql("list_work_orders"))
+async def list_work_orders(
+    conn: Conn,
+    principal: Annotated[
+        Principal,
+        Depends(require_role("worker", "government", "supplier", "admin")),
+    ],
+) -> list[WorkOrder]:
+    if principal.role == "worker":
+        rows = await conn.fetch(sql("work_orders_for_worker"), principal.account_id)
+    else:
+        rows = await conn.fetch(sql("list_work_orders"))
     return [_work_order(r) for r in rows]
 
 
@@ -510,10 +621,25 @@ async def update_work_order_status(
     conn: Conn,
     order_id: UUID,
     payload: WorkOrderStatusUpdate,
+    principal: Annotated[
+        Principal, Depends(require_role("worker", "supplier", "admin"))
+    ],
 ) -> WorkOrder:
+    """Advance a work order.
+
+    Government is excluded: a regulator approves agreements, it does not
+    dispatch the utility's field crews.
+    """
     # The UPDATE and the read-back are one transaction so the response cannot
     # show a state some concurrent writer produced in between.
     async with conn.transaction():
+        if principal.role == "worker":
+            assigned = await conn.fetchval(
+                sql("worker_assigned_to_order"), order_id, principal.account_id
+            )
+            if not assigned:
+                raise HTTPException(status_code=404, detail="work order not found")
+
         updated = await conn.fetchval(
             sql("update_work_order_status"), order_id, payload.status
         )
@@ -532,7 +658,14 @@ async def update_work_order_status(
     response_model=list[Agreement],
     tags=["agreements"],
 )
-async def pending_agreements(conn: Conn) -> list[Agreement]:
+async def pending_agreements(
+    conn: Conn,
+    _: Annotated[
+        Principal, Depends(require_role("government", "supplier", "admin"))
+    ],
+) -> list[Agreement]:
+    # The supplier submits these and needs to watch the queue; the government
+    # is what decides them.
     rows = await conn.fetch(sql("list_pending_agreements"))
     return [Agreement(**dict(r)) for r in rows]
 
@@ -546,11 +679,13 @@ async def decide_agreement(
     conn: Conn,
     agreement_id: UUID,
     payload: AgreementStatusUpdate,
+    _: Annotated[Principal, Depends(require_role("government", "admin"))],
 ) -> Agreement:
     """Approve or terminate a pending agreement.
 
-    Approving is what lets a site's exports start earning credit, so in a
-    system with auth this is an admin-only route. There is no auth yet.
+    Government only. Approving is what lets a site's exports start earning
+    credit, so the utility that pays for that export must not also be the party
+    that authorizes it.
     """
     async with conn.transaction():
         decided = await conn.fetchval(
@@ -579,6 +714,11 @@ async def decide_agreement(
 # --------------------------------------------------------------------------
 
 @app.get("/api/analytics/by-area", response_model=list[AreaStats], tags=["analytics"])
-async def analytics_by_area(conn: Conn) -> list[AreaStats]:
+async def analytics_by_area(
+    conn: Conn,
+    _: Annotated[
+        Principal, Depends(require_role("government", "supplier", "admin"))
+    ],
+) -> list[AreaStats]:
     rows = await conn.fetch(sql("analytics_by_area"))
     return [AreaStats(**dict(r)) for r in rows]
