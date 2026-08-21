@@ -153,6 +153,13 @@ SELECT b.bill_id,
        bp.period_start,
        bp.period_end,
        bp.coverage_pct,
+       -- The period's metered totals, frozen when the period was billed. Read
+       -- from billing_period rather than re-aggregated from device_reading:
+       -- re-summing would quietly pick up any late_reading that arrived after
+       -- the bill closed, and disagree with the line items below it.
+       bp.total_import_kwh,
+       bp.total_export_kwh,
+       bp.total_generation_kwh,
        b.currency,
        b.energy_charge,
        b.export_credit_earned,
