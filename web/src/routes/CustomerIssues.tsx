@@ -60,9 +60,9 @@ export default function CustomerIssues() {
     queryFn: api.listIssues,
   });
 
-  // The API returns every issue in the system -- there is no per-site issues
-  // endpoint yet -- so the customer view narrows to its own site here. Worth
-  // replacing with a server-side filter before this list gets long.
+  // /api/issues is scoped server-side now: a customer's token returns only
+  // issues on sites they own. The client filter that used to be here is gone
+  // -- it was never a boundary, and keeping it would imply it was.
   const mine = issues.data?.filter((i) => i.site_id === siteId) ?? [];
 
   return (
@@ -268,7 +268,7 @@ function IssueForm({
         {/* No auth: the server attributes this to the site's owner. Say so
             rather than implying the reader is signed in as someone. */}
         <p className="text-xs text-ink-muted">
-          Filed against this site and attributed to its registered owner.
+          Filed against this site, in your name.
         </p>
       </form>
     </Card>

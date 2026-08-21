@@ -15,6 +15,52 @@
 
 const BASE = "/api";
 
+// --------------------------------------------------------------------------
+// Bearer token
+//
+// Held in localStorage, which survives a refresh and a new tab. That also
+// makes it readable by any script running on this origin, so an XSS bug is a
+// token theft -- the tradeoff a demo can accept and a real deployment should
+// revisit (httpOnly cookie + CSRF token).
+//
+// The module holds the token rather than reading storage on every request, so
+// AuthContext and this client cannot disagree about who is signed in.
+// --------------------------------------------------------------------------
+
+const TOKEN_KEY = "gridsync.token";
+
+let authToken: string | null = readStoredToken();
+
+function readStoredToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    // Private mode, or storage disabled. Auth still works for this tab.
+    return null;
+  }
+}
+
+export function setToken(token: string | null): void {
+  authToken = token;
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* in-memory only */
+  }
+}
+
+export function getToken(): string | null {
+  return authToken;
+}
+
+/** Called when the API rejects our token, so the app can send us to /login. */
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn;
+}
+
 /** A decimal string from a Postgres NUMERIC. See the note above. */
 export type Decimal = string;
 
@@ -175,8 +221,6 @@ export interface IssueCreate {
   description?: string | null;
   severity?: IssueSeverity;
   priority?: number;
-  /** Optional: the server defaults this to the site's owner. No auth yet. */
-  reported_by_account_id?: string;
   device_id?: string | null;
   bill_id?: string | null;
 }
@@ -258,6 +302,63 @@ export interface Agreement {
 /** Only these two are reachable from a review; see the API model. */
 export type AgreementDecision = "active" | "terminated";
 
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+/**
+ * `consumer` is the customer portal's role. The schema's word for a household
+ * is `consumer` and the enum predates the portal naming, so the API keeps it
+ * rather than migrating a live enum for cosmetics.
+ */
+export type Role = "consumer" | "worker" | "government" | "supplier" | "admin";
+
+export interface Account {
+  account_id: string;
+  email: string;
+  full_name: string;
+  phone: string | null;
+  role: Role;
+  status: string;
+  created_at: Timestamp | null;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  token_type: "bearer";
+  expires_in: number;
+  account: Account;
+}
+
+export interface LoginBody {
+  email: string;
+  password: string;
+}
+
+export interface CustomerRegisterBody {
+  email: string;
+  password: string;
+  full_name: string;
+  phone?: string | null;
+  /** Serial printed on the site's billing meter, e.g. SEED-MTR-03. */
+  meter_serial: string;
+}
+
+export interface WorkerRegisterBody {
+  email: string;
+  password: string;
+  full_name: string;
+  /** Employee code on an existing worker profile, e.g. SEED-EMP-002. */
+  employee_code: string;
+}
+
+export interface StaffRegisterBody {
+  email: string;
+  password: string;
+  full_name: string;
+  registration_code: string;
+}
+
 export interface AreaStats {
   district: string;
   site_count: number;
@@ -299,11 +400,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: {
       Accept: "application/json",
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...init?.headers,
     },
   });
 
   if (!res.ok) {
+    // A 401 means the token is gone, expired or revoked -- there is nothing to
+    // retry, so drop it and let the app redirect rather than leaving the user
+    // on a page that will fail every request. 403 is different: the token is
+    // valid, this role just may not do that, and signing them out would be
+    // both wrong and confusing.
+    if (res.status === 401 && authToken) {
+      setToken(null);
+      onUnauthorized?.();
+    }
     // FastAPI puts a string on HTTPException and an array on a validation
     // failure. Both live under `detail`; neither is guaranteed to be JSON if
     // something upstream failed, hence the catch.
@@ -325,6 +436,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // ---------------------------------------------------------------------------
 
 export const api = {
+  // -- auth ---------------------------------------------------------------
+  login: (body: LoginBody) =>
+    request<TokenResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  me: () => request<Account>("/auth/me"),
+
+  registerCustomer: (body: CustomerRegisterBody) =>
+    request<TokenResponse>("/auth/register/customer", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  registerWorker: (body: WorkerRegisterBody) =>
+    request<TokenResponse>("/auth/register/worker", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  registerStaff: (role: "government" | "supplier", body: StaffRegisterBody) =>
+    request<TokenResponse>(`/auth/register/${role}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // -- data ---------------------------------------------------------------
   listSites: () => request<Site[]>("/sites"),
 
   siteSummary: (siteId: string) =>
@@ -368,6 +507,7 @@ export const api = {
  * typo'd key -- e.g. creating an issue must invalidate `issues.all()`.
  */
 export const queryKeys = {
+  me: () => ["auth", "me"] as const,
   sites: () => ["sites"] as const,
   siteSummary: (id: string) => ["sites", id, "summary"] as const,
   siteReadings: (id: string, days: number) =>

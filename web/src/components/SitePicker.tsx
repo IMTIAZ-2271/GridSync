@@ -1,55 +1,61 @@
-import { useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { api, queryKeys, type Site } from "../lib/api";
 
-export const SITE_PARAM = "site";
-
 /**
- * The selected site, held in the URL.
+ * The customer's current site.
  *
- * The query string is the store rather than React state or localStorage, which
- * buys three things at once: the selection survives a refresh, it persists
- * across the three customer routes because each link carries the search string
- * forward, and a link to a particular site is shareable.
+ * The site is no longer named in the URL. /api/sites now returns exactly the
+ * sites the token's account owns, so the selection is derived from who is
+ * signed in -- a customer cannot address someone else's site by editing a
+ * query string, and the API would answer 404 if they tried.
  *
- * When no site is named, the first solar site is selected and written back
- * with `replace`, so landing on /customer does not leave a blank URL in
- * history that the back button can return to.
+ * The schema still allows one account to own several sites
+ * (ACCOUNT ||--o{ SITE), so this keeps a selection; it just defaults to the
+ * first and only offers a control when there is a genuine choice to make.
  */
+// A module-level store rather than context: the picker in the header and the
+// three pages under it all need the same value, and they are not in a shared
+// subtree worth adding a provider for.
+let selectedSiteId: string | null = null;
+const listeners = new Set<() => void>();
+
+function selectSite(id: string) {
+  selectedSiteId = id;
+  listeners.forEach((fn) => fn());
+}
+
+function subscribe(fn: () => void) {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
+function snapshot() {
+  return selectedSiteId;
+}
+
+/** Cleared on sign-out so the next account does not inherit a selection. */
+export function resetSelectedSite() {
+  selectSite("");
+}
+
 export function useSelectedSite() {
-  const [params, setParams] = useSearchParams();
+  const selected = useSyncExternalStore(subscribe, snapshot, snapshot);
   const sitesQuery = useQuery({
     queryKey: queryKeys.sites(),
     queryFn: api.listSites,
   });
 
-  const requested = params.get(SITE_PARAM);
   const sites = sitesQuery.data;
-
-  // Only sites that exist may be selected -- a stale or hand-edited id falls
-  // back rather than leaving every panel below in a 404 state.
-  const valid = sites?.some((s) => s.site_id === requested) ? requested : null;
-  const fallback = sites?.find((s) => s.has_solar)?.site_id ?? sites?.[0]?.site_id;
-  const siteId = valid ?? fallback ?? null;
-
-  useEffect(() => {
-    if (!sites || !siteId || requested === siteId) return;
-    const next = new URLSearchParams(params);
-    next.set(SITE_PARAM, siteId);
-    setParams(next, { replace: true });
-  }, [sites, siteId, requested, params, setParams]);
-
-  const setSiteId = (id: string) => {
-    const next = new URLSearchParams(params);
-    next.set(SITE_PARAM, id);
-    setParams(next);
-  };
+  const valid = sites?.some((s) => s.site_id === selected) ? selected : null;
+  const siteId = valid ?? sites?.[0]?.site_id ?? null;
 
   return {
     siteId,
-    setSiteId,
+    setSiteId: selectSite,
     site: sites?.find((s) => s.site_id === siteId) ?? null,
     sites,
     isPending: sitesQuery.isPending,
@@ -60,10 +66,19 @@ export function useSelectedSite() {
 export default function SitePicker() {
   const { siteId, setSiteId, sites, isPending } = useSelectedSite();
 
-  if (isPending) {
-    return <div className="skeleton h-8 w-56" aria-hidden />;
-  }
+  if (isPending) return <div className="skeleton h-8 w-56" aria-hidden />;
+
+  // One site is the ordinary case. A dropdown with a single option is a
+  // control that cannot do anything, so show the site as a label instead.
   if (!sites?.length) return null;
+  if (sites.length === 1) {
+    return (
+      <span className="text-xs text-ink-muted">
+        {sites[0].label} &middot; {sites[0].district}
+        {sites[0].has_solar && " · solar"}
+      </span>
+    );
+  }
 
   return (
     <label className="flex items-center gap-2">
@@ -71,7 +86,7 @@ export default function SitePicker() {
       <select
         value={siteId ?? ""}
         onChange={(e) => setSiteId(e.target.value)}
-        className="rounded-md border border-hairline bg-surface px-2.5 py-1.5 text-sm text-ink shadow-xs outline-none focus:border-series-import focus:ring-2 focus:ring-series-import/25"
+        className="rounded-md border border-hairline bg-surface px-2.5 py-1.5 text-sm text-ink outline-none focus:border-series-import focus:ring-2 focus:ring-series-import/25"
       >
         {sites.map((site: Site) => (
           <option key={site.site_id} value={site.site_id}>
