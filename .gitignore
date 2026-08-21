@@ -1,6 +1,8 @@
-claude/
+.claude/
 .env
 __pycache__/
 *.pyc
 node_modules/
 .venv/
+CLAUDE.md
+docs/
