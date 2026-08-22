@@ -340,8 +340,12 @@ export interface CustomerRegisterBody {
   password: string;
   full_name: string;
   phone?: string | null;
-  /** Serial printed on the site's billing meter, e.g. SEED-MTR-03. */
-  meter_serial: string;
+  /**
+   * Serial printed on the site's billing meter, e.g. SEED-MTR-03. Omit or
+   * leave blank to register with no site -- the portal then walks the
+   * customer through building one from scratch.
+   */
+  meter_serial?: string;
 }
 
 export interface WorkerRegisterBody {
@@ -366,6 +370,73 @@ export interface AreaStats {
   total_import_kwh: Decimal;
   total_export_kwh: Decimal;
   total_generation_kwh: Decimal;
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding -- a customer with no site building one from scratch.
+// ---------------------------------------------------------------------------
+
+export type ConnectionType = "residential" | "commercial" | "industrial";
+
+export interface TariffPlan {
+  plan_id: string;
+  code: string;
+  name: string;
+  customer_class: ConnectionType;
+  currency: string;
+  fixed_monthly_charge: Decimal;
+  tax_rate: Decimal;
+}
+
+export interface SiteCreateBody {
+  address_line: string;
+  city: string;
+  district: string;
+  postal_code?: string | null;
+  connection_type: ConnectionType;
+  sanctioned_load_kw: number;
+  tariff_plan_id: string;
+}
+
+export interface MeterRegisterBody {
+  serial_no: string;
+  manufacturer: string;
+  model: string;
+}
+
+export interface MeterRegisterResult {
+  device_id: string;
+  serial_no: string;
+  backfill_from: DateOnly;
+  backfill_to: DateOnly;
+  readings_backfilled: number;
+}
+
+export interface SolarRegisterBody {
+  capacity_kw: number;
+  panel_count: number;
+  azimuth_deg?: number;
+  tilt_deg?: number;
+  manufacturer?: string;
+  model?: string;
+}
+
+export interface SolarRegisterResult {
+  inverter_device_id: string;
+  array_id: string;
+  agreement_id: string;
+  backfill_from: DateOnly;
+  backfill_to: DateOnly;
+  readings_backfilled: number;
+  /** The billing meter's own history, re-netted against this array's capacity. */
+  meter_readings_updated: number;
+}
+
+export interface BillingRunResult {
+  period_start: DateOnly;
+  status: "billed" | "skipped";
+  bill_id: string | null;
+  reason: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +537,30 @@ export const api = {
   // -- data ---------------------------------------------------------------
   listSites: () => request<Site[]>("/sites"),
 
+  // -- onboarding -----------------------------------------------------------
+  listTariffPlans: (connectionType?: ConnectionType) =>
+    request<TariffPlan[]>(
+      `/tariff-plans${connectionType ? `?connection_type=${connectionType}` : ""}`,
+    ),
+
+  createSite: (body: SiteCreateBody) =>
+    request<Site>("/sites", { method: "POST", body: JSON.stringify(body) }),
+
+  registerMeter: (siteId: string, body: MeterRegisterBody) =>
+    request<MeterRegisterResult>(`/sites/${siteId}/meter`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  registerSolar: (siteId: string, body: SolarRegisterBody) =>
+    request<SolarRegisterResult>(`/sites/${siteId}/solar`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  billSite: (siteId: string) =>
+    request<BillingRunResult[]>(`/sites/${siteId}/bill`, { method: "POST" }),
+
   siteSummary: (siteId: string) =>
     request<SiteSummary>(`/sites/${siteId}/summary`),
 
@@ -509,6 +604,8 @@ export const api = {
 export const queryKeys = {
   me: () => ["auth", "me"] as const,
   sites: () => ["sites"] as const,
+  tariffPlans: (connectionType?: ConnectionType) =>
+    ["tariff-plans", connectionType ?? "any"] as const,
   siteSummary: (id: string) => ["sites", id, "summary"] as const,
   siteReadings: (id: string, days: number) =>
     ["sites", id, "readings", days] as const,

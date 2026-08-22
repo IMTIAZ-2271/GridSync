@@ -445,3 +445,151 @@ CROSS JOIN LATERAL (
 ) t
 GROUP BY s.district
 ORDER BY s.district;
+
+
+-- ---------------------------------------------------------------------------
+-- Onboarding: a customer with no site building one from scratch.
+-- POST /api/sites, then /meter, then optionally /solar, then /bill.
+-- ---------------------------------------------------------------------------
+
+-- name: list_tariff_plans
+-- Currently-effective plans, optionally narrowed to one connection type.
+-- $1 is nullable -- a NULL parameter makes the filter a no-op rather than a
+-- second statement, since the onboarding form may ask before or after the
+-- customer has picked a connection type.
+SELECT plan_id,
+       code,
+       name,
+       customer_class::text AS customer_class,
+       currency,
+       fixed_monthly_charge,
+       tax_rate
+FROM tariff_plan
+WHERE effective_from <= CURRENT_DATE
+  AND (effective_to IS NULL OR effective_to > CURRENT_DATE)
+  AND ($1::site_connection_type IS NULL OR customer_class = $1::site_connection_type)
+ORDER BY customer_class, name;
+
+
+-- name: create_site
+-- latitude/longitude are resolved server-side from the district (the form
+-- collects an address, not coordinates) -- see services/api/main.py.
+INSERT INTO site (
+    account_id, tariff_plan_id, label, address_line, city, district,
+    postal_code, latitude, longitude, timezone, connection_type,
+    sanctioned_load_kw, energized_on, status
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Asia/Dhaka',
+        $10::site_connection_type, $11, CURRENT_DATE, 'active')
+RETURNING site_id;
+
+
+-- name: get_site
+-- Same projection as list_sites / sites_for_account, for one row -- used to
+-- render what create_site just inserted.
+SELECT s.site_id,
+       s.label,
+       s.district,
+       a.full_name AS account_name,
+       EXISTS (
+           SELECT 1
+           FROM solar_array sa
+           WHERE sa.site_id = s.site_id
+             AND sa.status <> 'decommissioned'
+       ) AS has_solar
+FROM site s
+JOIN account a ON a.account_id = s.account_id
+WHERE s.site_id = $1;
+
+
+-- name: site_has_billing_meter
+-- Rule 7 pre-check, before the deferred trigger would catch it at COMMIT --
+-- gives the caller a 409 instead of a mid-transaction constraint failure.
+SELECT EXISTS (
+    SELECT 1
+    FROM meter_spec ms
+    JOIN device d ON d.device_id = ms.device_id
+    WHERE ms.site_id = $1
+      AND ms.billing_role = 'billing'
+      AND d.removed_at IS NULL
+);
+
+
+-- name: create_meter_device
+INSERT INTO device (
+    site_id, device_type, serial_no, manufacturer, model,
+    interval_minutes, device_key_hash, installed_at, status
+)
+VALUES ($1, 'meter', $2, $3, $4, 30, $5, now(), 'active')
+RETURNING device_id;
+
+
+-- name: create_meter_spec
+-- Always bidirectional/billing: the onboarding flow only ever registers the
+-- one meter rule 7 requires. ct_ratio and phase_count are sane installer
+-- defaults, not customer input.
+INSERT INTO meter_spec (device_id, site_id, meter_flow, billing_role, ct_ratio, phase_count)
+VALUES ($1, $2, 'bidirectional', 'billing', '1:1', 1);
+
+
+-- name: site_billing_device
+SELECT d.device_id
+FROM device d
+JOIN meter_spec ms ON ms.device_id = d.device_id
+WHERE ms.site_id = $1
+  AND ms.billing_role = 'billing'
+  AND d.removed_at IS NULL;
+
+
+-- name: create_inverter_device
+INSERT INTO device (
+    site_id, parent_device_id, device_type, serial_no, manufacturer, model,
+    interval_minutes, device_key_hash, installed_at, status
+)
+VALUES ($1, $2, 'inverter', $3, $4, $5, 30, $6, now(), 'active')
+RETURNING device_id;
+
+
+-- name: create_inverter_spec
+-- ac_capacity_kw is the clipping ceiling; dc_capacity_kw is set ~20% above it
+-- by the caller, matching db/sql/seed_demo.sql's ratio.
+INSERT INTO inverter_spec (
+    device_id, ac_capacity_kw, dc_capacity_kw, mppt_count, phase_count,
+    rated_efficiency, anti_islanding
+)
+VALUES ($1, $2, $3, 2, 1, 0.9720, true);
+
+
+-- name: create_solar_array
+INSERT INTO solar_array (
+    site_id, inverter_device_id, label, panel_count, panel_watt_peak,
+    dc_capacity_kw, azimuth_deg, tilt_deg, shading_factor, commissioned_on, status
+)
+VALUES ($1, $2, 'Rooftop array', $3, $4, $5, $6, $7, 0.950, CURRENT_DATE, 'active')
+RETURNING array_id;
+
+
+-- name: create_net_metering_agreement
+-- status = 'pending': a new site's agreement joins the same approval queue
+-- db/sql/seed_demo.sql seeds for its non-solar sites, reviewed on
+-- /government/agreements rather than auto-approved on registration.
+INSERT INTO net_metering_agreement (
+    site_id, billing_device_id, approval_ref, sanctioned_capacity_kw,
+    export_cap_pct, settlement_type, credit_rollover_months,
+    effective_from, status
+)
+VALUES ($1, $2, $3, $4, 70.00, 'rollover_only', 12, CURRENT_DATE, 'pending')
+RETURNING agreement_id;
+
+
+-- name: site_billing_window
+-- The earliest month this site's billing meter has readings for, and
+-- "today" read in the same session zone the caller is pinned to -- so the
+-- handler's month-by-month loop agrees with the database about which months
+-- have actually finished.
+SELECT min(date_trunc('month', dr.interval_start AT TIME ZONE 'Asia/Dhaka'))::date AS first_month,
+       CURRENT_DATE AS today
+FROM device_reading dr
+JOIN meter_spec ms ON ms.device_id = dr.device_id
+WHERE ms.site_id = $1
+  AND ms.billing_role = 'billing';

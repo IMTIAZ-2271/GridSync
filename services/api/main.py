@@ -28,13 +28,14 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 from dotenv import load_dotenv
@@ -42,7 +43,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, PlainSerializer
 
-from .auth import CurrentAccount, Principal, require_role
+from .auth import CurrentAccount, Principal, hash_password, require_role
 from .queries import sql
 from .routes_auth import router as auth_router
 
@@ -363,6 +364,103 @@ class AreaStats(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Onboarding: a customer with no site building one from scratch.
+# --------------------------------------------------------------------------
+
+BACKFILL_DAYS = 90
+
+# The onboarding form collects an address, not coordinates -- site.latitude/
+# longitude feed the simulator's solar geometry (CLAUDE.md), so something has
+# to fill them. Approximate centroids for the districts db/sql/seed_demo.sql
+# already uses, with a city-centre fallback for anything else typed in; a
+# demo has no geocoder to call.
+_DHAKA_DISTRICT_COORDS: dict[str, tuple[Decimal, Decimal]] = {
+    "dhanmondi": (Decimal("23.746000"), Decimal("90.376000")),
+    "gulshan": (Decimal("23.791000"), Decimal("90.414000")),
+    "uttara": (Decimal("23.868000"), Decimal("90.399000")),
+    "mirpur": (Decimal("23.806000"), Decimal("90.365000")),
+    "bashundhara": (Decimal("23.815000"), Decimal("90.433000")),
+    "banani": (Decimal("23.793000"), Decimal("90.404000")),
+    "mohammadpur": (Decimal("23.766000"), Decimal("90.359000")),
+    "badda": (Decimal("23.780000"), Decimal("90.425000")),
+}
+_DHAKA_DEFAULT_COORDS = (Decimal("23.780636"), Decimal("90.279429"))
+
+
+def _district_coordinates(district: str) -> tuple[Decimal, Decimal]:
+    return _DHAKA_DISTRICT_COORDS.get(district.strip().lower(), _DHAKA_DEFAULT_COORDS)
+
+
+def _next_month(d: date) -> date:
+    return date(d.year + (d.month == 12), (d.month % 12) + 1, 1)
+
+
+class TariffPlanOut(BaseModel):
+    plan_id: UUID
+    code: str
+    name: str
+    customer_class: str
+    currency: str
+    fixed_monthly_charge: Money
+    tax_rate: Decimal
+
+
+class SiteCreate(BaseModel):
+    address_line: str = Field(min_length=1, max_length=300)
+    city: str = Field(min_length=1, max_length=100)
+    district: str = Field(min_length=1, max_length=100)
+    postal_code: str | None = Field(default=None, max_length=20)
+    connection_type: Literal["residential", "commercial", "industrial"] = "residential"
+    sanctioned_load_kw: Decimal = Field(gt=0)
+    tariff_plan_id: UUID
+
+
+class MeterRegister(BaseModel):
+    serial_no: str = Field(min_length=1, max_length=100)
+    manufacturer: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=100)
+
+
+class MeterRegisterOut(BaseModel):
+    device_id: UUID
+    serial_no: str
+    backfill_from: date
+    backfill_to: date
+    readings_backfilled: int
+
+
+class SolarRegister(BaseModel):
+    capacity_kw: Decimal = Field(gt=0, le=1000)
+    panel_count: int = Field(gt=0, le=2000)
+    azimuth_deg: int = Field(default=180, ge=0, le=359)
+    tilt_deg: int = Field(default=23, ge=0, le=90)
+    manufacturer: str = Field(default="Growatt", max_length=100)
+    model: str = Field(default="MIN-5000TL-X", max_length=100)
+
+
+class SolarRegisterOut(BaseModel):
+    inverter_device_id: UUID
+    array_id: UUID
+    agreement_id: UUID
+    backfill_from: date
+    backfill_to: date
+    readings_backfilled: int
+    # The billing meter's own history for the same window, re-netted against
+    # this array's capacity now that it is known. Without this, a freshly
+    # onboarded solar site's meter keeps the export-free readings the /meter
+    # step wrote before any capacity existed, and the site would show zero
+    # export -- and therefore never earn or roll over credit -- forever.
+    meter_readings_updated: int
+
+
+class BillingRunResult(BaseModel):
+    period_start: date
+    status: Literal["billed", "skipped"]
+    bill_id: UUID | None
+    reason: str | None
+
+
+# --------------------------------------------------------------------------
 # Authorization helpers
 #
 # require_role() answers "may this role call this endpoint at all". These
@@ -529,6 +627,252 @@ async def site_bills(
         items.setdefault(d.pop("bill_id"), []).append(BillLineItem(**d))
 
     return [Bill(**dict(r), line_items=items.get(r["bill_id"], [])) for r in bill_rows]
+
+
+# --------------------------------------------------------------------------
+# Onboarding
+#
+# A customer who registered with no meter serial lands here: build a site
+# from scratch instead of claiming one. Every step below is scoped to the
+# caller's own account -- there is no site_id a consumer can pass that was
+# not either just returned to them or already theirs.
+# --------------------------------------------------------------------------
+
+@app.get("/api/tariff-plans", response_model=list[TariffPlanOut], tags=["sites"])
+async def list_tariff_plans(
+    conn: Conn,
+    _: CurrentAccount,
+    connection_type: Literal["residential", "commercial", "industrial"] | None = None,
+) -> list[TariffPlanOut]:
+    rows = await conn.fetch(sql("list_tariff_plans"), connection_type)
+    return [TariffPlanOut(**dict(r)) for r in rows]
+
+
+@app.post("/api/sites", response_model=Site, status_code=201, tags=["sites"])
+async def create_site(
+    conn: Conn,
+    payload: SiteCreate,
+    principal: Annotated[Principal, Depends(require_role("consumer"))],
+) -> Site:
+    latitude, longitude = _district_coordinates(payload.district)
+    async with conn.transaction():
+        try:
+            site_id = await conn.fetchval(
+                sql("create_site"),
+                principal.account_id,
+                payload.tariff_plan_id,
+                "Home",
+                payload.address_line.strip(),
+                payload.city.strip(),
+                payload.district.strip(),
+                payload.postal_code,
+                latitude,
+                longitude,
+                payload.connection_type,
+                payload.sanctioned_load_kw,
+            )
+        except asyncpg.ForeignKeyViolationError:
+            raise HTTPException(status_code=422, detail="unknown tariff plan") from None
+        row = await conn.fetchrow(sql("get_site"), site_id)
+    return Site(**dict(row))
+
+
+@app.post(
+    "/api/sites/{site_id}/meter",
+    response_model=MeterRegisterOut,
+    status_code=201,
+    tags=["sites"],
+)
+async def register_meter(
+    conn: Conn,
+    site_id: UUID,
+    payload: MeterRegister,
+    principal: Annotated[Principal, Depends(require_role("consumer"))],
+) -> MeterRegisterOut:
+    """Register the site's one bidirectional billing meter (rule 7) and give
+    it 90 days of history so the dashboard is not empty the moment it exists.
+    """
+    await visible_site_or_404(conn, principal, site_id)
+
+    if await conn.fetchval(sql("site_has_billing_meter"), site_id):
+        raise HTTPException(
+            status_code=409, detail="this site already has a billing meter"
+        )
+
+    serial = payload.serial_no.strip()
+    device_key_hash = hash_password(secrets.token_hex(32))
+    backfill_from = date.today() - timedelta(days=BACKFILL_DAYS)
+    backfill_to = date.today() - timedelta(days=1)
+
+    async with conn.transaction():
+        try:
+            device_id = await conn.fetchval(
+                sql("create_meter_device"),
+                site_id, serial, payload.manufacturer.strip(),
+                payload.model.strip(), device_key_hash,
+            )
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(
+                status_code=409,
+                detail=f"a device with serial '{serial}' is already registered",
+            ) from None
+
+        await conn.execute(sql("create_meter_spec"), device_id, site_id)
+
+        reading_count = await conn.fetchval(
+            "SELECT backfill_readings($1, $2, $3, NULL)",
+            device_id, backfill_from, backfill_to,
+        )
+
+    return MeterRegisterOut(
+        device_id=device_id,
+        serial_no=serial,
+        backfill_from=backfill_from,
+        backfill_to=backfill_to,
+        readings_backfilled=reading_count,
+    )
+
+
+@app.post(
+    "/api/sites/{site_id}/solar",
+    response_model=SolarRegisterOut,
+    status_code=201,
+    tags=["sites"],
+)
+async def register_solar(
+    conn: Conn,
+    site_id: UUID,
+    payload: SolarRegister,
+    principal: Annotated[Principal, Depends(require_role("consumer"))],
+) -> SolarRegisterOut:
+    """Add an inverter, its array and a pending net-metering agreement, then
+    backfill the same 90-day window the meter got so the two lines agree on
+    how far back the chart goes -- and re-net the meter's own history against
+    this capacity, since it was written before any solar existed to net
+    against (see backfill_readings' upsert note in db/sql/backfill.sql).
+    """
+    await visible_site_or_404(conn, principal, site_id)
+
+    billing_device_id = await conn.fetchval(sql("site_billing_device"), site_id)
+    if billing_device_id is None:
+        raise HTTPException(
+            status_code=409, detail="register a billing meter before adding solar"
+        )
+
+    device_key_hash = hash_password(secrets.token_hex(32))
+    dc_capacity_kw = (payload.capacity_kw * Decimal("1.2")).quantize(Decimal("0.001"))
+    panel_watt_peak = int((dc_capacity_kw * 1000 / payload.panel_count).to_integral_value())
+    backfill_from = date.today() - timedelta(days=BACKFILL_DAYS)
+    backfill_to = date.today() - timedelta(days=1)
+
+    async with conn.transaction():
+        inverter_id = await conn.fetchval(
+            sql("create_inverter_device"),
+            site_id, billing_device_id, f"ONB-INV-{uuid4().hex[:10].upper()}",
+            payload.manufacturer.strip(), payload.model.strip(), device_key_hash,
+        )
+        await conn.execute(
+            sql("create_inverter_spec"), inverter_id, payload.capacity_kw, dc_capacity_kw
+        )
+        array_id = await conn.fetchval(
+            sql("create_solar_array"),
+            site_id, inverter_id, payload.panel_count, panel_watt_peak,
+            dc_capacity_kw, payload.azimuth_deg, payload.tilt_deg,
+        )
+        agreement_id = await conn.fetchval(
+            sql("create_net_metering_agreement"),
+            site_id, billing_device_id, f"ONB-NMA-{uuid4().hex[:10].upper()}",
+            payload.capacity_kw,
+        )
+
+        reading_count = await conn.fetchval(
+            "SELECT backfill_readings($1, $2, $3, $4)",
+            inverter_id, backfill_from, backfill_to, payload.capacity_kw,
+        )
+
+        # Re-net the meter over the same window now that capacity is known.
+        # The /meter step wrote these readings with p_capacity_kw = NULL
+        # (export = 0, rule 8's own guard inside backfill_readings still
+        # applies -- any interval already frozen or billed is left alone).
+        meter_reading_count = await conn.fetchval(
+            "SELECT backfill_readings($1, $2, $3, $4)",
+            billing_device_id, backfill_from, backfill_to, payload.capacity_kw,
+        )
+
+    return SolarRegisterOut(
+        inverter_device_id=inverter_id,
+        array_id=array_id,
+        agreement_id=agreement_id,
+        backfill_from=backfill_from,
+        backfill_to=backfill_to,
+        readings_backfilled=reading_count,
+        meter_readings_updated=meter_reading_count,
+    )
+
+
+async def _run_billing_with_retry(
+    conn: asyncpg.Connection, site_id: UUID, period_start: date, attempts: int = 3
+) -> UUID:
+    """run_billing under REPEATABLE READ, retried on serialization failure --
+    the isolation and retry contract CLAUDE.md requires of every caller.
+    """
+    for attempt in range(attempts):
+        try:
+            async with conn.transaction(isolation="repeatable_read"):
+                return await conn.fetchval(
+                    "SELECT run_billing($1, $2)", site_id, period_start
+                )
+        except asyncpg.SerializationError:
+            if attempt == attempts - 1:
+                raise
+
+
+@app.post(
+    "/api/sites/{site_id}/bill",
+    response_model=list[BillingRunResult],
+    tags=["sites"],
+)
+async def bill_site(
+    conn: Conn,
+    site_id: UUID,
+    principal: Annotated[Principal, Depends(require_role("consumer"))],
+) -> list[BillingRunResult]:
+    """Run every complete month this site has readings for.
+
+    "Complete" is not computed here -- run_billing's own coverage gate (rule
+    8) is: a month attempted before it has fully elapsed comes back short of
+    the 95% threshold and is reported skipped rather than billed.
+    """
+    await visible_site_or_404(conn, principal, site_id)
+
+    window = await conn.fetchrow(sql("site_billing_window"), site_id)
+    if window is None or window["first_month"] is None:
+        raise HTTPException(
+            status_code=409, detail="this site has no readings to bill yet"
+        )
+
+    results: list[BillingRunResult] = []
+    month: date = window["first_month"]
+    last_month = date(window["today"].year, window["today"].month, 1)
+
+    while month <= last_month:
+        try:
+            bill_id = await _run_billing_with_retry(conn, site_id, month)
+            results.append(
+                BillingRunResult(
+                    period_start=month, status="billed", bill_id=bill_id, reason=None
+                )
+            )
+        except asyncpg.CheckViolationError as exc:
+            results.append(
+                BillingRunResult(
+                    period_start=month, status="skipped", bill_id=None,
+                    reason=str(exc),
+                )
+            )
+        month = _next_month(month)
+
+    return results
 
 
 # --------------------------------------------------------------------------

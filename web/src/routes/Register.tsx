@@ -24,7 +24,7 @@ const TABS: { id: Tab; label: string; accent: string }[] = [
 
 const BLURB: Record<Tab, string> = {
   customer:
-    "Enter the serial printed on your billing meter. It links this account to your service point, with its readings, bills and credit history.",
+    "Enter the serial printed on your billing meter to link an existing service point, or leave it blank to set one up from scratch.",
   worker:
     "Enter your employee code. Your existing work orders, assignments and skills stay attached to your profile.",
   government:
@@ -35,8 +35,8 @@ const BLURB: Record<Tab, string> = {
 
 const CLAIM_FIELD: Record<Tab, { label: string; hint: string; placeholder: string }> = {
   customer: {
-    label: "Meter serial",
-    hint: "On the billing meter's faceplate. Demo: SEED-MTR-03 … SEED-MTR-08",
+    label: "Meter serial (optional)",
+    hint: "On the billing meter's faceplate. Demo: SEED-MTR-03 … SEED-MTR-08. Leave blank to build a new connection instead.",
     placeholder: "SEED-MTR-03",
   },
   worker: {
@@ -116,8 +116,13 @@ export default function Register() {
   }
 
   const field = CLAIM_FIELD[tab];
+  // The claim proves ownership of existing data for every role except the
+  // customer, who may instead be building a service point from nothing.
   const canSubmit =
-    fullName.trim() && email.trim() && password.length >= 8 && claim.trim();
+    fullName.trim() &&
+    email.trim() &&
+    password.length >= 8 &&
+    (tab === "customer" || claim.trim());
 
   return (
     <AuthShell
@@ -230,7 +235,7 @@ export default function Register() {
             onChange={(e) => setClaim(e.target.value)}
             placeholder={field.placeholder}
             className={`mt-1 font-mono ${FIELD}`}
-            required
+            required={tab !== "customer"}
           />
           <p className="mt-1 text-xs text-ink-muted">{field.hint}</p>
         </div>

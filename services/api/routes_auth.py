@@ -68,7 +68,11 @@ class RegisterBase(BaseModel):
 
 class CustomerRegisterIn(RegisterBase):
     phone: str | None = Field(default=None, max_length=40)
-    meter_serial: str = Field(min_length=1, max_length=100)
+    # Optional: an empty (or omitted) serial creates the account with no site
+    # at all, rather than 404ing. The customer portal then walks them through
+    # /api/sites -> /meter -> /solar -> /bill instead of claiming one that
+    # already exists.
+    meter_serial: str | None = Field(default=None, max_length=100)
 
 
 class WorkerRegisterIn(RegisterBase):
@@ -160,24 +164,47 @@ async def me(conn: Conn, principal: CurrentAccount) -> AccountOut:
     status_code=status.HTTP_201_CREATED,
 )
 async def register_customer(conn: Conn, payload: CustomerRegisterIn) -> TokenOut:
-    """Claim a service point with the serial printed on its billing meter.
+    """Claim a service point with the serial printed on its billing meter, or
+    register with no meter at all.
 
-    The account is genuinely new and the site is transferred to it. Everything
-    the customer portal shows is keyed on site_id, so readings, bills, credit
-    and issues all come across; the old bills keep naming the previous owner,
-    which is what rule 2 is for.
+    Given a serial, the account is genuinely new and the site is transferred
+    to it -- everything the customer portal shows is keyed on site_id, so
+    readings, bills, credit and issues all come across; the old bills keep
+    naming the previous owner, which is what rule 2 is for.
+
+    Given no serial, this is a household with no service point yet: create
+    the account and stop there. The customer portal detects the empty site
+    list and walks them through building one (POST /api/sites, then /meter,
+    then optionally /solar, then /bill) instead of claiming existing data.
     """
+    serial = (payload.meter_serial or "").strip()
+
+    if not serial:
+        async with conn.transaction():
+            try:
+                account_id = await conn.fetchval(
+                    sql("create_account"),
+                    payload.email,
+                    hash_password(payload.password),
+                    payload.full_name.strip(),
+                    payload.phone,
+                    "consumer",
+                )
+            except asyncpg.UniqueViolationError:
+                raise _EMAIL_TAKEN from None
+            return _token_response(await _profile(conn, account_id))
+
     async with conn.transaction():
         site = await conn.fetchrow(
             sql("site_by_meter_serial"),
-            payload.meter_serial.strip(),
+            serial,
             SEED_PASSWORD_PLACEHOLDER,
         )
         if site is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(
-                    f"no billing meter with serial '{payload.meter_serial}'. "
+                    f"no billing meter with serial '{serial}'. "
                     "Check the serial printed on the meter."
                 ),
             )
