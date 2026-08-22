@@ -10,6 +10,7 @@ import {
 import { SERIES, type SeriesId } from "../lib/series";
 import { useSelectedSite } from "../components/SitePicker";
 import ReadingsChart from "../components/ReadingsChart";
+import CustomerOnboarding from "./CustomerOnboarding";
 import {
   Card,
   CardHeader,
@@ -23,8 +24,12 @@ import {
 const READING_DAYS = 7;
 
 export default function CustomerOverview() {
-  const { siteId, site } = useSelectedSite();
+  const { siteId, site, sites, isPending: sitesPending } = useSelectedSite();
 
+  // enabled: !!siteId already keeps these from firing with no site selected,
+  // so it is safe to call them unconditionally -- the onboarding branch below
+  // is a render choice, not an early return, and must not change how many
+  // hooks this component calls between renders.
   const summary = useQuery({
     queryKey: queryKeys.siteSummary(siteId!),
     queryFn: () => api.siteSummary(siteId!),
@@ -42,6 +47,13 @@ export default function CustomerOverview() {
   const series: SeriesId[] = site?.has_solar
     ? ["import", "export", "generation"]
     : ["import", "export"];
+
+  // A newly registered customer (empty meter serial) owns no site at all --
+  // an empty dashboard would just look broken. Walk them through building
+  // one instead of rendering stat tiles for data that does not exist.
+  if (!sitesPending && sites && sites.length === 0) {
+    return <CustomerOnboarding />;
+  }
 
   return (
     <div className="space-y-6">
