@@ -2,17 +2,16 @@
 
 Registration is where a new user picks up existing seeded data. Each role does
 it differently because each role's data hangs off a different key -- see the
-header of db/sql/auth_queries.sql for why.
+header of db/sql/dao/auth_queries.sql for why.
 """
 from __future__ import annotations
 
 from datetime import datetime
-from collections.abc import AsyncIterator
-from typing import Annotated, Literal
+from typing import Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 
 from .auth import (
@@ -23,6 +22,7 @@ from .auth import (
     registration_code,
     verify_password,
 )
+from .db import Conn
 from .queries import sql
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -86,18 +86,6 @@ class StaffRegisterIn(RegisterBase):
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
-
-async def _get_conn(request: Request) -> AsyncIterator[asyncpg.Connection]:
-    """Yield a pooled connection.
-
-    `request` must carry its Request annotation -- without it FastAPI reads the
-    name as a query parameter and every route here 422s on a missing "request".
-    """
-    async with request.app.state.pool.acquire() as conn:
-        yield conn
-
-
-Conn = Annotated[asyncpg.Connection, Depends(_get_conn)]
 
 _EMAIL_TAKEN = HTTPException(
     status_code=status.HTTP_409_CONFLICT,

@@ -1,18 +1,24 @@
-"""Loader for the named statements in `db/sql/api_queries.sql`.
+"""Loader for the named statements under `db/sql/dao/`.
 
 The reading path is raw SQL kept in `db/sql/` (CLAUDE.md), so the handlers need
-a way to reach a statement by name. The file is split on `-- name: <name>`
-markers; everything up to the next marker is that statement's text, comments
-included, and the comments are worth keeping -- they explain why each aggregate
-filters the way it does.
+a way to reach a statement by name. Every file in db/sql/dao/ is split on
+`-- name: <name>` markers; everything up to the next marker is that
+statement's text, comments included, and the comments are worth keeping --
+they explain why each aggregate filters the way it does. db/sql/service/
+holds run_billing and backfill_readings instead -- those are called as plain
+Postgres functions, not through this loader.
 
-Loaded once at import. The file is a few hundred lines and never changes at
-runtime, so there is nothing to gain from re-reading it per request.
+Every *.sql file dropped into db/sql/dao/ is picked up automatically, one DAO
+per file (site, issue, work order, agreement, analytics, auth, cross-role
+scoping) -- adding a DAO means adding a file, not editing this list.
+
+Loaded once at import. The directory is a few hundred lines total and never
+changes at runtime, so there is nothing to gain from re-reading it per request.
 """
 from pathlib import Path
 
 SQL_DIR = Path(__file__).resolve().parents[2] / "db" / "sql"
-SQL_FILES = (SQL_DIR / "api_queries.sql", SQL_DIR / "auth_queries.sql")
+SQL_FILES = tuple(sorted((SQL_DIR / "dao").glob("*.sql")))
 
 _NAME_MARKER = "-- name:"
 

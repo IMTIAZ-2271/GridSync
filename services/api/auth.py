@@ -23,6 +23,8 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError, VerificationError
 from fastapi import Depends, HTTPException, Request, status
 
+from .queries import sql
+
 Role = Literal["consumer", "worker", "government", "supplier", "admin"]
 
 # The placeholder db/sql/seed_demo.sql writes into password_hash. It is not a
@@ -194,3 +196,49 @@ def registration_code(role: Literal["government", "supplier"]) -> str:
     if not code:
         raise RuntimeError(f"{key} is not set. Add it to .env (see .env.example).")
     return code
+
+
+# --------------------------------------------------------------------------
+# Row-level authorization
+#
+# require_role() answers "may this role call this endpoint at all". This
+# answers the narrower question: "may this caller see THIS row". Both are
+# needed -- a customer may legitimately call /summary, but only for a site
+# they own.
+# --------------------------------------------------------------------------
+
+async def visible_site_or_404(
+    conn: asyncpg.Connection,
+    principal: Principal,
+    site_id: UUID,
+) -> None:
+    """Raise unless this caller may read this site.
+
+    404 rather than 403 for a site that exists but belongs to someone else.
+    403 would confirm the site exists, which turns this endpoint into a probe
+    for which meters are registered. The caller cannot act on the difference
+    either way.
+    """
+    not_found = HTTPException(status_code=404, detail="site not found")
+
+    if principal.sees_every_site:
+        if not await conn.fetchval("SELECT 1 FROM site WHERE site_id = $1", site_id):
+            raise not_found
+        return
+
+    if principal.role == "consumer":
+        if not await conn.fetchval(
+            sql("account_owns_site"), site_id, principal.account_id
+        ):
+            raise not_found
+        return
+
+    if principal.role == "worker":
+        # A worker sees a site for as long as an assignment ties them to it.
+        if not await conn.fetchval(
+            sql("worker_covers_site"), site_id, principal.account_id
+        ):
+            raise not_found
+        return
+
+    raise not_found
