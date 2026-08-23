@@ -93,6 +93,12 @@ export default function CustomerBills() {
                 <BillRow
                   key={bill.bill_id}
                   bill={bill}
+                  // A household with one connection gets "Main" on every row,
+                  // which distinguishes nothing. Only name the connection once
+                  // there is more than one to tell apart.
+                  showPoint={
+                    new Set(bills.data.map((b) => b.billing_point_id)).size > 1
+                  }
                   isOpen={expanded === bill.bill_id}
                   onToggle={() =>
                     setExpanded(expanded === bill.bill_id ? null : bill.bill_id)
@@ -109,10 +115,12 @@ export default function CustomerBills() {
 
 function BillRow({
   bill,
+  showPoint,
   isOpen,
   onToggle,
 }: {
   bill: Bill;
+  showPoint: boolean;
   isOpen: boolean;
   onToggle: () => void;
 }) {
@@ -141,6 +149,14 @@ function BillRow({
             </span>
             {period}
           </span>
+          {/* Each billing point is billed independently and carries its own
+              credit balance, so two bills for the same month are normal on a
+              multi-meter site -- they are not duplicates. */}
+          {showPoint && (
+            <span className="mt-0.5 block pl-5 text-xs text-ink-2">
+              {bill.point_label}
+            </span>
+          )}
           {/* Rule 8: a period billed on partial data must say so on its face. */}
           {bill.coverage_pct && Number(bill.coverage_pct) < 100 && (
             <span className="mt-0.5 block pl-5 text-xs text-ink-muted">

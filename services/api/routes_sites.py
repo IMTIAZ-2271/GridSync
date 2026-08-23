@@ -262,6 +262,10 @@ BACKFILL_DAYS = 90
 # regulator's rollup.
 
 
+def _next_month(d: date) -> date:
+    return date(d.year + (d.month == 12), (d.month % 12) + 1, 1)
+
+
 async def _run_billing_with_retry(
     conn: asyncpg.Connection, point_id: UUID, period_start: date, attempts: int = 3
 ) -> UUID:

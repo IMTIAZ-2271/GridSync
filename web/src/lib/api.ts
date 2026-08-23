@@ -871,6 +871,7 @@ export const queryKeys = {
     ["sites", id, "readings", days] as const,
   siteBills: (id: string) => ["sites", id, "bills"] as const,
   siteDevices: (id: string) => ["sites", id, "devices"] as const,
+  sitePoints: (id: string) => ["sites", id, "points"] as const,
   fleetDevices: () => ["devices"] as const,
   issues: () => ["issues"] as const,
   workOrders: () => ["work-orders"] as const,
