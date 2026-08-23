@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { PORTALS } from "../portals";
 import { ROLE_LABEL, useAuth } from "../auth/AuthContext";
 import { portalsForRole } from "../auth/RequireAuth";
+import NotificationBell from "./NotificationBell";
 import SitePicker from "./SitePicker";
 
 /**
@@ -49,6 +50,10 @@ export default function Layout() {
 
           {account && (
             <div className="ml-auto flex items-center gap-4">
+              {/* Every role has an inbox: a household hears about its work
+                  orders and its net-metering decision, a worker will hear
+                  about their approval, a supplier about expired offers. */}
+              <NotificationBell />
               <div className="text-right leading-tight">
                 <p className="text-sm font-medium text-ink">{account.full_name}</p>
                 <p className="text-xs text-ink-muted">{ROLE_LABEL[account.role]}</p>

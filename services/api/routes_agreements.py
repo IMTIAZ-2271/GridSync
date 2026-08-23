@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from .auth import Principal, require_role
 from .db import Conn
+from .notify import notify_site_owner
 from .queries import sql
 
 router = APIRouter(tags=["agreements"])
@@ -99,4 +100,28 @@ async def decide_agreement(
                 detail=f"agreement is already '{current}', not pending",
             )
         row = await conn.fetchrow(sql("get_agreement"), agreement_id)
+
+        # Consumer requirement 7: net-metering applications go to the
+        # government, and this is the household hearing back. Written inside
+        # the transaction so a rolled-back decision cannot leave a
+        # notification announcing it.
+        approved = payload.status == "active"
+        await notify_site_owner(
+            conn,
+            row["site_id"],
+            "net_metering_application",
+            "Net metering approved" if approved else "Net metering not approved",
+            body=(
+                f"Your net-metering agreement for {row['site_label']} is now "
+                f"active. Exported energy starts earning credit from "
+                f"{row['effective_from']}."
+                if approved else
+                f"The net-metering agreement for {row['site_label']} was not "
+                f"approved. Contact your distribution company for the reason."
+            ),
+            severity="info" if approved else "warning",
+            entity_type="agreement",
+            entity_id=str(agreement_id),
+            dedupe_key=f"nma:{agreement_id}:{payload.status}",
+        )
     return Agreement(**dict(row))

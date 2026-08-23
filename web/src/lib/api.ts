@@ -504,6 +504,40 @@ export interface SupplierCompany {
   rating_count: number;
 }
 
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+export type NotificationSeverity = "info" | "warning" | "critical";
+
+export interface Notification {
+  notification_id: number;
+  kind: string;
+  severity: NotificationSeverity;
+  title: string;
+  body: string | null;
+  /**
+   * A loose pointer at whatever this is about -- deliberately not a foreign
+   * key server-side, so a notification outlives the row that caused it. Link
+   * only the entity_types you recognise; render the rest as plain text.
+   */
+  entity_type: string | null;
+  entity_id: string | null;
+  created_at: Timestamp;
+  read_at: Timestamp | null;
+}
+
+export interface NotificationPage {
+  items: Notification[];
+  /** Served with the list so the badge and the panel cannot disagree. */
+  unread_count: number;
+}
+
+export interface ReadResult {
+  marked_read: number;
+  unread_count: number;
+}
+
 export interface AreaStats {
   district: string;
   site_count: number;
@@ -721,6 +755,18 @@ export const api = {
 
   // -- data ---------------------------------------------------------------
   listSites: () => request<Site[]>("/sites"),
+
+  // -- notifications --------------------------------------------------------
+  listNotifications: (unreadOnly = false) =>
+    request<NotificationPage>(
+      `/notifications${unreadOnly ? "?unread_only=true" : ""}`,
+    ),
+
+  markNotificationRead: (id: number) =>
+    request<ReadResult>(`/notifications/${id}/read`, { method: "POST" }),
+
+  markAllNotificationsRead: () =>
+    request<ReadResult>("/notifications/read-all", { method: "POST" }),
 
   // -- organisations --------------------------------------------------------
   listDistricts: () => request<District[]>("/districts"),

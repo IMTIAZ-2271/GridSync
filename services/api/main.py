@@ -48,6 +48,7 @@ from .routes_auth import router as auth_router
 from .orgs import router as orgs_router
 from .routes_devices import router as devices_router
 from .routes_issues import router as issues_router
+from .routes_notifications import router as notifications_router
 from .routes_sites import router as sites_router
 from .routes_work_orders import router as work_orders_router
 
@@ -128,6 +129,7 @@ app.include_router(orgs_router)
 app.include_router(sites_router)
 app.include_router(devices_router)
 app.include_router(issues_router)
+app.include_router(notifications_router)
 app.include_router(work_orders_router)
 app.include_router(agreements_router)
 app.include_router(analytics_router)
