@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -5,6 +6,7 @@ import {
   formatKwh,
   formatMoney,
   queryKeys,
+  type SiteDevice,
   type SiteSummary,
 } from "../lib/api";
 import { SERIES, type SeriesId } from "../lib/series";
@@ -42,6 +44,17 @@ export default function CustomerOverview() {
     enabled: !!siteId,
   });
 
+  // Equipment health is not a headline on this page -- it earns space only
+  // when something is wrong. The one device worth interrupting for is the
+  // billing meter: rule 8 refuses to bill an incomplete period, so its
+  // silence does not produce a wrong bill, it produces no bill at all, and
+  // the customer would otherwise find out by noticing an absence.
+  const devices = useQuery({
+    queryKey: queryKeys.siteDevices(siteId!),
+    queryFn: () => api.siteDevices(siteId!),
+    enabled: !!siteId,
+  });
+
   // A site with no panels has no generation series to draw. Dropping it must
   // not shift import or export onto different colours.
   const series: SeriesId[] = site?.has_solar
@@ -57,6 +70,8 @@ export default function CustomerOverview() {
 
   return (
     <div className="space-y-6">
+      {devices.data && <TelemetryNotice devices={devices.data} />}
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {summary.isPending || !siteId ? (
           <>
@@ -100,6 +115,53 @@ export default function CustomerOverview() {
           )}
         </div>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * Shown only when the billing meter is not reporting cleanly.
+ *
+ * Deliberately silent on a healthy site: a banner that is always there is a
+ * banner nobody reads, and the equipment page is where the full picture
+ * lives. Other devices are excluded on purpose -- an inverter gap costs
+ * credit and belongs on that page, but it is not worth interrupting the
+ * dashboard for.
+ */
+function TelemetryNotice({ devices }: { devices: SiteDevice[] }) {
+  const meter = devices.find((d) => d.billing_role === "billing");
+  if (!meter || meter.health === "healthy" || meter.health === "unknown") {
+    return null;
+  }
+
+  const stale =
+    meter.health === "silent" ||
+    meter.health === "no_data" ||
+    meter.health === "faulty";
+
+  return (
+    <div className="rounded-xl border border-hairline bg-surface px-5 py-4">
+      <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-ink">
+        <span aria-hidden className="text-status-critical">
+          !
+        </span>
+        {stale
+          ? "Your billing meter has stopped reporting"
+          : "Readings are missing from your billing meter"}
+      </p>
+      <p className="mt-1 text-xs text-ink-muted">
+        {meter.last_reading_at
+          ? `Last reading ${new Date(meter.last_reading_at).toLocaleString(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}.`
+          : "No readings have arrived from this meter in the last 90 days."}{" "}
+        A period with missing intervals is not billed until it is complete, so
+        figures below may be behind.{" "}
+        <Link to="/customer/devices" className="font-medium text-ink-2 underline">
+          Check equipment
+        </Link>
+      </p>
     </div>
   );
 }

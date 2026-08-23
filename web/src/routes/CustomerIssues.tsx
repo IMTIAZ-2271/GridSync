@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -55,6 +56,15 @@ export default function CustomerIssues() {
   const { siteId, site } = useSelectedSite();
   const queryClient = useQueryClient();
 
+  // The equipment page links here with the device already chosen and a
+  // category that matches the symptom it saw. issue.device_id has existed on
+  // the API since auth landed and nothing ever set it -- an issue filed from
+  // a device card is the first one that arrives already pointing at the thing
+  // that is wrong, which is what a work order needs to be dispatched against.
+  const [params] = useSearchParams();
+  const prefillDeviceId = params.get("device");
+  const prefillCategory = params.get("category");
+
   const issues = useQuery({
     queryKey: queryKeys.issues(),
     queryFn: api.listIssues,
@@ -97,6 +107,12 @@ export default function CustomerIssues() {
 
       <IssueForm
         siteId={siteId}
+        deviceId={prefillDeviceId}
+        initialCategory={
+          CATEGORIES.some((c) => c.value === prefillCategory)
+            ? (prefillCategory as IssueCategory)
+            : undefined
+        }
         onCreated={() =>
           queryClient.invalidateQueries({ queryKey: queryKeys.issues() })
         }
@@ -142,12 +158,19 @@ const FIELD =
 
 function IssueForm({
   siteId,
+  deviceId,
+  initialCategory,
   onCreated,
 }: {
   siteId: string | null;
+  /** Set when this form was opened from a device card. */
+  deviceId?: string | null;
+  initialCategory?: IssueCategory;
   onCreated: () => void;
 }) {
-  const [category, setCategory] = useState<IssueCategory>("billing_dispute");
+  const [category, setCategory] = useState<IssueCategory>(
+    initialCategory ?? "billing_dispute",
+  );
   const [severity, setSeverity] = useState<IssueSeverity>("medium");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -161,6 +184,7 @@ function IssueForm({
         severity,
         title: title.trim(),
         description: description.trim() || null,
+        device_id: deviceId ?? null,
       }),
     onSuccess: () => {
       setTitle("");
@@ -265,10 +289,12 @@ function IssueForm({
             Filed. It now appears in your list.
           </p>
         )}
-        {/* No auth: the server attributes this to the site's owner. Say so
-            rather than implying the reader is signed in as someone. */}
+        {/* The server attributes this to the signed-in account; the form
+            never carries a reporter. Say so rather than implying otherwise. */}
         <p className="text-xs text-ink-muted">
-          Filed against this site, in your name.
+          {deviceId
+            ? "Filed against this device, in your name."
+            : "Filed against this site, in your name."}
         </p>
       </form>
     </Card>

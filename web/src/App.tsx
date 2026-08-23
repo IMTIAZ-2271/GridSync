@@ -7,6 +7,7 @@ import Login from "./routes/Login";
 import Register from "./routes/Register";
 import CustomerOverview from "./routes/CustomerOverview";
 import CustomerBills from "./routes/CustomerBills";
+import CustomerDevices from "./routes/CustomerDevices";
 import CustomerIssues from "./routes/CustomerIssues";
 import WorkerOrders from "./routes/WorkerOrders";
 import WorkerIssues from "./routes/WorkerIssues";
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="customer">
             <Route index element={<CustomerOverview />} />
             <Route path="bills" element={<CustomerBills />} />
+            <Route path="devices" element={<CustomerDevices />} />
             <Route path="issues" element={<CustomerIssues />} />
           </Route>
 

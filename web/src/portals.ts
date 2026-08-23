@@ -38,6 +38,7 @@ export const PORTALS: Portal[] = [
     routes: [
       { path: "", label: "Overview" },
       { path: "bills", label: "Bills" },
+      { path: "devices", label: "Equipment" },
       { path: "issues", label: "Report an issue" },
     ],
   },

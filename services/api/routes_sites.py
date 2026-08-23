@@ -172,11 +172,18 @@ class SolarRegisterOut(BaseModel):
     inverter_device_id: UUID
     array_id: UUID
     agreement_id: UUID
+    # False when this array joined the agreement already covering the site
+    # rather than opening a new one -- see the handler.
+    agreement_created: bool
+    # Arrays now live on this site, and their combined AC capacity. Both count
+    # the array just added.
+    array_count: int
+    site_capacity_kw: Energy
     backfill_from: date
     backfill_to: date
     readings_backfilled: int
     # The billing meter's own history for the same window, re-netted against
-    # this array's capacity now that it is known. Without this, a freshly
+    # the site's TOTAL capacity now that it is known. Without this, a freshly
     # onboarded solar site's meter keeps the export-free readings the /meter
     # step wrote before any capacity existed, and the site would show zero
     # export -- and therefore never earn or roll over credit -- forever.
@@ -471,11 +478,25 @@ async def register_solar(
     payload: SolarRegister,
     principal: Annotated[Principal, Depends(require_role("consumer"))],
 ) -> SolarRegisterOut:
-    """Add an inverter, its array and a pending net-metering agreement, then
-    backfill the same 90-day window the meter got so the two lines agree on
-    how far back the chart goes -- and re-net the meter's own history against
-    this capacity, since it was written before any solar existed to net
-    against (see backfill_readings' upsert note in db/sql/service/backfill.sql).
+    """Add an inverter, its array and a net-metering agreement, then backfill
+    the same 90-day window the meter got so the two lines agree on how far
+    back the chart goes -- and re-net the meter's own history, since it was
+    written before any solar existed to net against (see backfill_readings'
+    upsert note in db/sql/service/backfill.sql).
+
+    Additive, not once-per-site. `solar_array` is 1-N on `site`, so a site may
+    genuinely carry several arrays, and two things follow from that:
+
+    * The meter is re-netted against the site's TOTAL AC capacity, not the
+      array just registered. Passing this array's capacity alone would rewrite
+      an existing multi-array site's history as if the other arrays were not
+      there, silently *reducing* its recorded export.
+    * The agreement is reused. `nma_no_overlap` allows one non-terminated
+      agreement per site, and rule 1 forbids editing a live one's sanctioned
+      capacity -- an uprate is a new agreement with its own effective_from,
+      which is a government decision, not something this endpoint may take.
+      So a second array joins the existing agreement, and the response says so
+      via `agreement_created`.
     """
     await visible_site_or_404(conn, principal, site_id)
 
@@ -484,6 +505,11 @@ async def register_solar(
         raise HTTPException(
             status_code=409, detail="register a billing meter before adding solar"
         )
+
+    existing = await conn.fetchrow(sql("site_solar_status"), site_id)
+    array_count = existing["array_count"] + 1
+    site_capacity_kw = existing["capacity_kw"] + payload.capacity_kw
+    label = "Rooftop array" if array_count == 1 else f"Rooftop array {array_count}"
 
     device_key_hash = hash_password(secrets.token_hex(32))
     dc_capacity_kw = (payload.capacity_kw * Decimal("1.2")).quantize(Decimal("0.001"))
@@ -502,14 +528,30 @@ async def register_solar(
         )
         array_id = await conn.fetchval(
             sql("create_solar_array"),
-            site_id, inverter_id, payload.panel_count, panel_watt_peak,
+            site_id, inverter_id, label, payload.panel_count, panel_watt_peak,
             dc_capacity_kw, payload.azimuth_deg, payload.tilt_deg,
         )
-        agreement_id = await conn.fetchval(
-            sql("create_net_metering_agreement"),
-            site_id, billing_device_id, f"ONB-NMA-{uuid4().hex[:10].upper()}",
-            payload.capacity_kw,
-        )
+
+        open_agreement = await conn.fetchrow(sql("site_open_agreement"), site_id)
+        agreement_created = open_agreement is None
+        if agreement_created:
+            try:
+                agreement_id = await conn.fetchval(
+                    sql("create_net_metering_agreement"),
+                    site_id, billing_device_id,
+                    f"ONB-NMA-{uuid4().hex[:10].upper()}",
+                    site_capacity_kw,
+                )
+            except asyncpg.ExclusionViolationError:
+                # Backstop for the race the SELECT above cannot close: two
+                # concurrent /solar calls on one site. Without it that
+                # surfaces as a 500.
+                raise HTTPException(
+                    status_code=409,
+                    detail="this site already has a net-metering agreement",
+                ) from None
+        else:
+            agreement_id = open_agreement["agreement_id"]
 
         reading_count = await conn.fetchval(
             "SELECT backfill_readings($1, $2, $3, $4)",
@@ -520,15 +562,21 @@ async def register_solar(
         # The /meter step wrote these readings with p_capacity_kw = NULL
         # (export = 0, rule 8's own guard inside backfill_readings still
         # applies -- any interval already frozen or billed is left alone).
+        # site_capacity_kw, not payload.capacity_kw: the meter measures the
+        # whole site at the grid boundary (rule 6), so netting it against one
+        # array would understate export on a multi-array site.
         meter_reading_count = await conn.fetchval(
             "SELECT backfill_readings($1, $2, $3, $4)",
-            billing_device_id, backfill_from, backfill_to, payload.capacity_kw,
+            billing_device_id, backfill_from, backfill_to, site_capacity_kw,
         )
 
     return SolarRegisterOut(
         inverter_device_id=inverter_id,
         array_id=array_id,
         agreement_id=agreement_id,
+        agreement_created=agreement_created,
+        array_count=array_count,
+        site_capacity_kw=site_capacity_kw,
         backfill_from=backfill_from,
         backfill_to=backfill_to,
         readings_backfilled=reading_count,

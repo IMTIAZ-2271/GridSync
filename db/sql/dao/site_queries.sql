@@ -315,11 +315,14 @@ VALUES ($1, $2, $3, 2, 1, 0.9720, true);
 
 
 -- name: create_solar_array
+-- label is a parameter, not a literal: a site may carry several arrays
+-- (solar_array is 1-N on site), so the second one must not also be called
+-- "Rooftop array".
 INSERT INTO solar_array (
     site_id, inverter_device_id, label, panel_count, panel_watt_peak,
     dc_capacity_kw, azimuth_deg, tilt_deg, shading_factor, commissioned_on, status
 )
-VALUES ($1, $2, 'Rooftop array', $3, $4, $5, $6, $7, 0.950, CURRENT_DATE, 'active')
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0.950, CURRENT_DATE, 'active')
 RETURNING array_id;
 
 
@@ -334,6 +337,53 @@ INSERT INTO net_metering_agreement (
 )
 VALUES ($1, $2, $3, $4, 70.00, 'rollover_only', 12, CURRENT_DATE, 'pending')
 RETURNING agreement_id;
+
+
+-- name: site_solar_status
+-- What solar this site already carries, before another array is added.
+--
+-- capacity_kw is the AC total, summed over DISTINCT inverters: that is the
+-- unit backfill_readings' p_capacity_kw is in (it scales a half-sine peaking
+-- at the inverter's AC rating), and one inverter can drive more than one
+-- array, so summing per array would double-count its clipping ceiling.
+--
+-- Decommissioned arrays and removed inverters are excluded -- an array that
+-- no longer exists must not keep inflating the meter's netted export.
+WITH live AS (
+    SELECT sa.array_id, sa.inverter_device_id
+    FROM solar_array sa
+    JOIN device d ON d.device_id = sa.inverter_device_id
+    WHERE sa.site_id = $1
+      AND sa.status <> 'decommissioned'
+      AND d.removed_at IS NULL
+)
+SELECT (SELECT count(*) FROM live)::int AS array_count,
+       coalesce((
+           SELECT sum(inv.ac_capacity_kw)
+           FROM inverter_spec inv
+           WHERE inv.device_id IN (SELECT DISTINCT inverter_device_id FROM live)
+       ), 0)::numeric AS capacity_kw;
+
+
+-- name: site_open_agreement
+-- The site's live net-metering agreement, if it has one.
+--
+-- nma_no_overlap is a GiST exclusion on (site_id, [effective_from,
+-- effective_to)) for every status except 'terminated', so a site can hold at
+-- most one open-ended agreement at a time. A second array joins the
+-- agreement already covering the site rather than opening a competing one --
+-- inserting blindly raises an exclusion violation, and UPDATEing the
+-- sanctioned capacity of a live agreement would contradict rule 1 (a raised
+-- capacity is a new agreement with its own effective_from, not an edit).
+SELECT agreement_id,
+       sanctioned_capacity_kw,
+       status,
+       effective_from
+FROM net_metering_agreement
+WHERE site_id = $1
+  AND status <> 'terminated'
+ORDER BY effective_from DESC
+LIMIT 1;
 
 
 -- name: site_billing_window

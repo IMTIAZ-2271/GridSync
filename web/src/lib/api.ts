@@ -178,6 +178,61 @@ export interface Bill {
   line_items: BillLineItem[];
 }
 
+/**
+ * Derived telemetry health for one device. Computed in SQL from interval
+ * coverage, never read off `device.status` -- see db/sql/dao/device_queries.sql.
+ *
+ *   healthy   the window is >= 90% covered and the device reported recently
+ *   degraded  reporting, but with gaps
+ *   silent    nothing in the last 48 hours
+ *   no_data   never reported at all
+ *   faulty    flagged by hand or by a field visit, whatever the rows say
+ *   unknown   installed too recently to have owed a single interval yet
+ */
+export type DeviceHealth =
+  | "healthy"
+  | "degraded"
+  | "silent"
+  | "no_data"
+  | "faulty"
+  | "unknown";
+
+export type DeviceType = "meter" | "inverter";
+export type BillingRole = "billing" | "generation_only" | "check_meter";
+
+export interface SiteDevice {
+  device_id: string;
+  device_type: DeviceType;
+  serial_no: string;
+  manufacturer: string | null;
+  model: string | null;
+  firmware_version: string | null;
+  interval_minutes: number;
+  installed_at: Timestamp;
+  status: "active" | "faulty" | "removed";
+
+  /** Meter only. Rule 7: exactly one device per site is the billing meter. */
+  billing_role: BillingRole | null;
+  meter_flow: "unidirectional" | "bidirectional" | null;
+
+  /** Inverter only. */
+  ac_capacity_kw: Decimal | null;
+  array_count: number;
+  dc_capacity_kw: Decimal | null;
+  array_status: string | null;
+
+  /** Last 7 whole Asia/Dhaka days, clipped at installed_at, excluding today. */
+  window_from: Timestamp;
+  window_to: Timestamp;
+  last_reading_at: Timestamp | null;
+  intervals_expected: number;
+  intervals_received: number;
+  intervals_suspect: number;
+  coverage_pct: Decimal | null;
+
+  health: DeviceHealth;
+}
+
 export type IssueCategory =
   | "billing_dispute"
   | "meter_fault"
@@ -425,10 +480,15 @@ export interface SolarRegisterResult {
   inverter_device_id: string;
   array_id: string;
   agreement_id: string;
+  /** False when this array joined the agreement already covering the site. */
+  agreement_created: boolean;
+  /** Arrays now on this site, and their combined AC capacity -- this one included. */
+  array_count: number;
+  site_capacity_kw: Decimal;
   backfill_from: DateOnly;
   backfill_to: DateOnly;
   readings_backfilled: number;
-  /** The billing meter's own history, re-netted against this array's capacity. */
+  /** The meter's own history, re-netted against the site's TOTAL capacity. */
   meter_readings_updated: number;
 }
 
@@ -569,6 +629,9 @@ export const api = {
 
   siteBills: (siteId: string) => request<Bill[]>(`/sites/${siteId}/bills`),
 
+  siteDevices: (siteId: string) =>
+    request<SiteDevice[]>(`/sites/${siteId}/devices`),
+
   listIssues: () => request<Issue[]>("/issues"),
 
   createIssue: (body: IssueCreate) =>
@@ -610,6 +673,7 @@ export const queryKeys = {
   siteReadings: (id: string, days: number) =>
     ["sites", id, "readings", days] as const,
   siteBills: (id: string) => ["sites", id, "bills"] as const,
+  siteDevices: (id: string) => ["sites", id, "devices"] as const,
   issues: () => ["issues"] as const,
   workOrders: () => ["work-orders"] as const,
   pendingAgreements: () => ["agreements", "pending"] as const,

@@ -119,8 +119,15 @@ async def test_same_interval_on_a_different_device_is_fine(conn):
                       import_kwh=None, export_kwh=None,
                       generation_kwh=Decimal("2.5000"))
 
+    # Scoped to the two devices this test created. An unscoped COUNT(*) on the
+    # interval passes only on an empty database: rule 4's uniqueness is per
+    # (device_id, interval_start), so any other device that happens to hold
+    # 06:30 on 2026-08-10 -- a backfill, a seed run -- is a legitimate row that
+    # would inflate the count and fail a test about something else entirely.
     assert await conn.fetchval(
-        "SELECT count(*) FROM device_reading WHERE interval_start = $1", moment
+        "SELECT count(*) FROM device_reading "
+        "WHERE interval_start = $1 AND device_id = ANY($2::uuid[])",
+        moment, [meter, inverter],
     ) == 2
 
 
