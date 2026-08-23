@@ -72,7 +72,7 @@ export const PORTALS: Portal[] = [
     base: "/supplier",
     routes: [
       { path: "", label: "Sites" },
-      { path: "analytics", label: "Analytics" },
+      { path: "equipment", label: "Equipment" },
     ],
   },
 ];

@@ -9,6 +9,10 @@ import {
   type SiteDevice,
 } from "../lib/api";
 import { useSelectedSite } from "../components/SitePicker";
+// Shared with the supplier's fleet inventory -- see web/src/lib/devices.ts.
+// Both pages read the same `health` verdict off the same query, so both have
+// to call it the same thing.
+import { HEALTH, issueCategoryFor, roleOf } from "../lib/devices";
 import {
   Badge,
   Card,
@@ -30,72 +34,6 @@ import {
  * threshold that decides "degraded" is the same number for every caller of the
  * endpoint, not something each client re-invents.
  */
-
-const HEALTH: Record<
-  DeviceHealth,
-  { label: string; tone: string; hint: string }
-> = {
-  healthy: {
-    label: "Reporting",
-    tone: "good",
-    hint: "Sending readings on schedule.",
-  },
-  degraded: {
-    label: "Gaps",
-    tone: "warning",
-    hint: "Reporting, but intervals are missing from the last 7 days.",
-  },
-  silent: {
-    label: "Silent",
-    tone: "critical",
-    hint: "Nothing received in over 48 hours.",
-  },
-  no_data: {
-    // Not "never reported": the API only scans the last 90 days, so a device
-    // silent for longer than that lands here too. The wording has to be true
-    // of both.
-    label: "No recent readings",
-    tone: "critical",
-    hint: "Nothing received in the last 90 days.",
-  },
-  faulty: {
-    label: "Faulty",
-    tone: "critical",
-    hint: "Flagged as faulty. A work order may already be open.",
-  },
-  unknown: {
-    label: "Too new",
-    tone: "neutral",
-    hint: "Installed too recently to judge.",
-  },
-};
-
-/** What a device is for, which is what decides how much a gap costs. */
-function roleOf(device: SiteDevice): string {
-  if (device.device_type === "inverter") return "Solar inverter";
-  switch (device.billing_role) {
-    case "billing":
-      return "Billing meter";
-    case "generation_only":
-      return "Generation meter";
-    case "check_meter":
-      return "Check meter";
-    default:
-      return "Meter";
-  }
-}
-
-/**
- * Pre-selected category on the issue form. A silent billing meter is a data
- * gap, not a meter fault -- the meter may be fine and the link down -- so the
- * category follows the symptom, not the guess.
- */
-function issueCategoryFor(device: SiteDevice): string {
-  if (device.health === "faulty") {
-    return device.device_type === "inverter" ? "inverter_fault" : "meter_fault";
-  }
-  return "data_gap";
-}
 
 export default function CustomerDevices() {
   const { siteId, site } = useSelectedSite();

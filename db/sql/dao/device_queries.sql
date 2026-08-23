@@ -16,8 +16,16 @@
 -- silence test below can move onto it; the coverage test stays either way.
 
 
--- name: devices_for_site
--- Every telemetry-reporting device on one site, with its 7-day coverage.
+-- name: device_health
+-- Telemetry-reporting devices with their 7-day coverage, for one site or for
+-- the whole fleet.
+--
+-- $1 is the site filter: a uuid narrows to that site, NULL returns every
+-- device on every site. One statement rather than two because the customer's
+-- equipment page and the supplier's fleet inventory ask exactly the same
+-- question at different scopes, and two copies of this arithmetic would
+-- eventually disagree about what "degraded" means. The caller decides scope;
+-- authorization is the route's job, not this query's.
 --
 -- Scope: `reports_telemetry` is the filter that answers "which devices should
 -- logically have a health check". A device flagged false produces no readings
@@ -55,6 +63,9 @@ WITH bounds AS (
 ),
 live AS (
     SELECT d.device_id,
+           d.site_id,
+           si.label AS site_label,
+           si.district,
            d.device_type,
            d.serial_no,
            d.manufacturer,
@@ -64,7 +75,8 @@ live AS (
            d.installed_at,
            d.status
     FROM device d
-    WHERE d.site_id = $1
+    JOIN site si ON si.site_id = d.site_id
+    WHERE ($1::uuid IS NULL OR d.site_id = $1)
       AND d.removed_at IS NULL
       AND d.reports_telemetry
 ),
@@ -117,6 +129,9 @@ counted AS (
     GROUP BY e.device_id
 )
 SELECT m.device_id,
+       m.site_id,
+       m.site_label,
+       m.district,
        m.device_type::text                       AS device_type,
        m.serial_no,
        m.manufacturer,
@@ -179,6 +194,7 @@ LEFT JOIN LATERAL (
 ) arr ON true
 -- Billing meter first: it is the device whose silence costs the customer
 -- money, so it should never be something the reader has to scroll for.
-ORDER BY (ms.billing_role = 'billing') DESC NULLS LAST,
+ORDER BY m.site_label,
+         (ms.billing_role = 'billing') DESC NULLS LAST,
          m.device_type,
          m.serial_no;

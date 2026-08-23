@@ -14,7 +14,7 @@ import WorkerIssues from "./routes/WorkerIssues";
 import GovernmentByArea from "./routes/GovernmentByArea";
 import GovernmentAgreements from "./routes/GovernmentAgreements";
 import SupplierSites from "./routes/SupplierSites";
-import SupplierAnalytics from "./routes/SupplierAnalytics";
+import SupplierEquipment from "./routes/SupplierEquipment";
 
 /** Send "/" to the signed-in role's portal, or to the login page. */
 function Home() {
@@ -59,7 +59,7 @@ export default function App() {
 
           <Route path="supplier">
             <Route index element={<SupplierSites />} />
-            <Route path="analytics" element={<SupplierAnalytics />} />
+            <Route path="equipment" element={<SupplierEquipment />} />
           </Route>
         </Route>
       </Route>

@@ -43,6 +43,11 @@ class SiteDevice(BaseModel):
     """One telemetry-reporting device, with its coverage over the window."""
 
     device_id: UUID
+    # Carried even on the single-site read, so the fleet view and the customer
+    # view deserialize the same shape.
+    site_id: UUID
+    site_label: str
+    district: str
     device_type: Literal["meter", "inverter"]
     serial_no: str
     manufacturer: str | None
@@ -91,5 +96,27 @@ async def site_devices(
 ) -> list[SiteDevice]:
     """The site's reporting devices, billing meter first."""
     await visible_site_or_404(conn, principal, site_id)
-    rows = await conn.fetch(sql("devices_for_site"), site_id)
+    rows = await conn.fetch(sql("device_health"), site_id)
+    return [SiteDevice(**dict(r)) for r in rows]
+
+
+@router.get("/api/devices", response_model=list[SiteDevice])
+async def fleet_devices(
+    conn: Conn,
+    _: Annotated[
+        Principal, Depends(require_role("government", "supplier", "admin"))
+    ],
+) -> list[SiteDevice]:
+    """Every reporting device in the fleet.
+
+    Fleet-wide readers only, and no `visible_site_or_404` because there is no
+    single site to check -- the role *is* the scope, exactly as it is for
+    /api/analytics/by-area. A consumer or worker asking for this gets 403 and
+    must go through the per-site route above, which narrows to what they own
+    or are dispatched to.
+
+    One query rather than one per site: the supplier's inventory page would
+    otherwise be N+1 requests to render a single table.
+    """
+    rows = await conn.fetch(sql("device_health"), None)
     return [SiteDevice(**dict(r)) for r in rows]

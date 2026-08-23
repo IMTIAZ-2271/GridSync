@@ -202,6 +202,10 @@ export type BillingRole = "billing" | "generation_only" | "check_meter";
 
 export interface SiteDevice {
   device_id: string;
+  /** Carried on both scopes, so the fleet and per-site reads share a shape. */
+  site_id: string;
+  site_label: string;
+  district: string;
   device_type: DeviceType;
   serial_no: string;
   manufacturer: string | null;
@@ -634,6 +638,9 @@ export const api = {
   siteDevices: (siteId: string) =>
     request<SiteDevice[]>(`/sites/${siteId}/devices`),
 
+  /** Every reporting device in the fleet. Government and supplier only. */
+  fleetDevices: () => request<SiteDevice[]>("/devices"),
+
   listIssues: () => request<Issue[]>("/issues"),
 
   createIssue: (body: IssueCreate) =>
@@ -677,6 +684,7 @@ export const queryKeys = {
     ["sites", id, "readings", days] as const,
   siteBills: (id: string) => ["sites", id, "bills"] as const,
   siteDevices: (id: string) => ["sites", id, "devices"] as const,
+  fleetDevices: () => ["devices"] as const,
   issues: () => ["issues"] as const,
   workOrders: () => ["work-orders"] as const,
   pendingAgreements: () => ["agreements", "pending"] as const,

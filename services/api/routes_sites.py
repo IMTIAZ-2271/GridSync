@@ -424,13 +424,19 @@ async def create_site(
     principal: Annotated[Principal, Depends(require_role("consumer"))],
 ) -> Site:
     district, latitude, longitude = _resolve_district(payload.district)
+    # The address, not the constant "Home" this used to write. A customer with
+    # one site never noticed, but `site.label` is also what the supplier's
+    # fleet table and the government's queue identify a site by, and eight rows
+    # all reading "Home" identify nothing. The address is what a utility calls
+    # a connection anyway.
+    label = payload.address_line.strip()[:80]
     async with conn.transaction():
         try:
             site_id = await conn.fetchval(
                 sql("create_site"),
                 principal.account_id,
                 payload.tariff_plan_id,
-                "Home",
+                label,
                 payload.address_line.strip(),
                 payload.city.strip(),
                 district,
