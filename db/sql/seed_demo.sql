@@ -82,6 +82,7 @@ CREATE TEMP TABLE seed_site (
     n            int PRIMARY KEY,
     account_id   uuid,
     site_id      uuid,
+    point_id     uuid,
     meter_id     uuid,
     inverter_id  uuid,
     capacity_kw  numeric(8,3),   -- 0 for the non-solar sites
@@ -144,7 +145,27 @@ FROM new_sites ns
 WHERE ns.label = format('Seed Site %s', to_char(s.n, 'FM00'));
 
 -- ---------------------------------------------------------------------------
--- Billing meters: one bidirectional meter per site (rule 7).
+-- Billing points: one connection per seed site.
+--
+-- The seed models the simple household -- one meter, one connection. The
+-- schema allows several per site (migration d5a7c2b91e40) and rule 7 is
+-- enforced per point, but adding a second connection here would change every
+-- committed bill number this seed is checked against, so it stays at one.
+-- ---------------------------------------------------------------------------
+WITH new_points AS (
+    INSERT INTO billing_point (site_id, label, reference)
+    SELECT s.site_id, 'Main', format('SEED-CONN-%s', to_char(s.n, 'FM0000'))
+    FROM seed_site s
+    ORDER BY s.n
+    RETURNING point_id, reference
+)
+UPDATE seed_site s
+SET point_id = np.point_id
+FROM new_points np
+WHERE np.reference = format('SEED-CONN-%s', to_char(s.n, 'FM0000'));
+
+-- ---------------------------------------------------------------------------
+-- Billing meters: one bidirectional meter per billing point (rule 7).
 -- ---------------------------------------------------------------------------
 WITH new_meters AS (
     INSERT INTO device (site_id, device_type, serial_no, manufacturer, model,
@@ -163,9 +184,10 @@ SET meter_id = m.device_id
 FROM new_meters m
 WHERE m.serial_no = format('SEED-MTR-%s', to_char(s.n, 'FM00'));
 
-INSERT INTO meter_spec (device_id, site_id, meter_flow, billing_role,
+INSERT INTO meter_spec (device_id, site_id, billing_point_id, meter_flow,
+                        billing_role,
                         ct_ratio, max_current_amp, phase_count, seal_no)
-SELECT s.meter_id, s.site_id, 'bidirectional', 'billing',
+SELECT s.meter_id, s.site_id, s.point_id, 'bidirectional', 'billing',
        '1:1', 60.0, 1, format('SEAL-%s', to_char(s.n, 'FM0000'))
 FROM seed_site s;
 
@@ -214,11 +236,12 @@ WHERE s.inverter_id IS NOT NULL;
 
 -- Active agreements for the solar sites.
 INSERT INTO net_metering_agreement (
-    site_id, billing_device_id, approval_ref, sanctioned_capacity_kw,
+    site_id, billing_point_id, billing_device_id, approval_ref,
+    sanctioned_capacity_kw,
     export_cap_pct, settlement_type, credit_rollover_months,
     effective_from, status
 )
-SELECT s.site_id, s.meter_id,
+SELECT s.site_id, s.point_id, s.meter_id,
        format('SEED-NMA-%s', to_char(s.n, 'FM0000')),
        s.capacity_kw, 70.00, 'rollover_only', 12,
        (CURRENT_DATE - INTERVAL '18 months')::date, 'active'
@@ -227,11 +250,12 @@ WHERE s.capacity_kw > 0;
 
 -- Pending agreements for the three non-solar sites: the approval queue.
 INSERT INTO net_metering_agreement (
-    site_id, billing_device_id, approval_ref, sanctioned_capacity_kw,
+    site_id, billing_point_id, billing_device_id, approval_ref,
+    sanctioned_capacity_kw,
     export_cap_pct, settlement_type, credit_rollover_months,
     effective_from, status
 )
-SELECT s.site_id, s.meter_id,
+SELECT s.site_id, s.point_id, s.meter_id,
        format('SEED-NMA-PEND-%s', to_char(s.n, 'FM0000')),
        (3.0 + s.n * 0.5)::numeric(8,3), 70.00, 'rollover_only', 12,
        (CURRENT_DATE + INTERVAL '14 days')::date, 'pending'
@@ -248,13 +272,19 @@ VALUES
   ('seed-worker-2@gridsync.test', '$argon2id$seed$notarealhash',
    'Rubel Ahmed',  '+8801711000002', 'worker', 'active');
 
+-- service_district is a foreign key to `district` since migration
+-- e7c4b19a2d83, so these are real districts rather than the 'Dhaka North' /
+-- 'Dhaka South' labels that used to sit here. Gulshan and Dhanmondi are also
+-- served by different utilities (DESCO and DPDC), which is what makes
+-- db/sql/seed_orgs.sql able to demonstrate both branches of worker
+-- requirement 1.
 INSERT INTO worker_profile (account_id, employee_code, service_district,
                             max_daily_jobs, availability, hired_on)
 SELECT a.account_id,
        CASE a.email WHEN 'seed-worker-1@gridsync.test'
             THEN 'SEED-EMP-001' ELSE 'SEED-EMP-002' END,
        CASE a.email WHEN 'seed-worker-1@gridsync.test'
-            THEN 'Dhaka North' ELSE 'Dhaka South' END,
+            THEN 'Gulshan' ELSE 'Dhanmondi' END,
        5,
        'available',
        (CURRENT_DATE - INTERVAL '3 years')::date

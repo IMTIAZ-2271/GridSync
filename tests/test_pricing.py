@@ -33,7 +33,7 @@ async def test_site_cannot_reference_a_nonexistent_plan(conn):
                 city, district, latitude, longitude, sanctioned_load_kw
             )
             VALUES ($1, gen_random_uuid(), 'orphan', '1 Test Road',
-                    'Dhaka', 'Dhaka', 23.780000, 90.279000, 5.000)
+                    'Dhaka', 'Dhanmondi', 23.746000, 90.376000, 5.000)
             """,
             account,
         )
@@ -52,7 +52,7 @@ async def test_site_tariff_plan_id_is_still_not_null(conn):
                 city, district, latitude, longitude, sanctioned_load_kw
             )
             VALUES ($1, NULL, 'no-plan', '1 Test Road',
-                    'Dhaka', 'Dhaka', 23.780000, 90.279000, 5.000)
+                    'Dhaka', 'Dhanmondi', 23.746000, 90.376000, 5.000)
             """,
             account,
         )

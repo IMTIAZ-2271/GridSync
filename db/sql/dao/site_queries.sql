@@ -77,6 +77,7 @@ SELECT s.site_id,
        win.export_kwh     AS window_export_kwh,
        win.generation_kwh AS window_generation_kwh,
        lb.bill_id,
+       lb.point_label          AS bill_point_label,
        lb.period_start         AS bill_period_start,
        lb.period_end           AS bill_period_end,
        lb.currency             AS bill_currency,
@@ -94,9 +95,10 @@ SELECT s.site_id,
        lb.status               AS bill_status
 FROM site s
 LEFT JOIN LATERAL (
-    SELECT b.*, bp.period_start, bp.period_end
+    SELECT b.*, bp.period_start, bp.period_end, pt.label AS point_label
     FROM bill b
     JOIN billing_period bp ON bp.period_id = b.period_id
+    JOIN billing_point pt ON pt.point_id = b.billing_point_id
     WHERE b.site_id = s.site_id
       -- A voided bill has been superseded by a correction (rule 1); showing it
       -- as "latest" would show the customer a number nobody owes.
@@ -105,11 +107,24 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) lb ON TRUE
 LEFT JOIN LATERAL (
-    SELECT cl.balance_kwh_after, cl.balance_amount_after
-    FROM credit_ledger cl
-    WHERE cl.site_id = s.site_id
-    ORDER BY cl.entry_id DESC
-    LIMIT 1
+    -- Summed over the site's billing points, not read off one row. Each
+    -- point keeps its own running balance, so a site with two connections
+    -- has two of them and the household's balance is the total. The inner
+    -- LIMIT 1 is still "the newest entry IS the balance", applied per point;
+    -- CROSS JOIN drops points that have never earned anything.
+    SELECT COALESCE(SUM(latest.balance_kwh_after), 0)::numeric(12,4)
+               AS balance_kwh_after,
+           COALESCE(SUM(latest.balance_amount_after), 0)::numeric(14,4)
+               AS balance_amount_after
+    FROM billing_point pt
+    CROSS JOIN LATERAL (
+        SELECT cl.balance_kwh_after, cl.balance_amount_after
+        FROM credit_ledger cl
+        WHERE cl.billing_point_id = pt.point_id
+        ORDER BY cl.entry_id DESC
+        LIMIT 1
+    ) latest
+    WHERE pt.site_id = s.site_id
 ) bal ON TRUE
 CROSS JOIN LATERAL (
     SELECT COALESCE(SUM(r.import_kwh) FILTER (WHERE ms.billing_role = 'billing'), 0)::numeric(12,4) AS import_kwh,
@@ -152,6 +167,9 @@ ORDER BY r.interval_start;
 -- lossy step rule 5 forbids.
 SELECT b.bill_id,
        b.period_id,
+       b.billing_point_id,
+       pt.label AS point_label,
+       pt.reference AS point_reference,
        bp.period_start,
        bp.period_end,
        bp.coverage_pct,
@@ -179,8 +197,9 @@ SELECT b.bill_id,
        b.voided_by_bill_id
 FROM bill b
 JOIN billing_period bp ON bp.period_id = b.period_id
+JOIN billing_point pt ON pt.point_id = b.billing_point_id
 WHERE b.site_id = $1
-ORDER BY bp.period_start DESC, b.issued_at DESC;
+ORDER BY bp.period_start DESC, pt.label, b.issued_at DESC;
 
 
 -- name: site_bill_line_items
@@ -256,17 +275,79 @@ JOIN account a ON a.account_id = s.account_id
 WHERE s.site_id = $1;
 
 
--- name: site_has_billing_meter
+-- name: point_has_billing_meter
 -- Rule 7 pre-check, before the deferred trigger would catch it at COMMIT --
 -- gives the caller a 409 instead of a mid-transaction constraint failure.
+--
+-- Keyed on the billing point, not the site: since migration d5a7c2b91e40 a
+-- site may carry several billing meters, one per point, and asking the old
+-- site-wide question would refuse the second connection a household is
+-- entitled to add.
 SELECT EXISTS (
     SELECT 1
     FROM meter_spec ms
     JOIN device d ON d.device_id = ms.device_id
-    WHERE ms.site_id = $1
+    WHERE ms.billing_point_id = $1
       AND ms.billing_role = 'billing'
       AND d.removed_at IS NULL
 );
+
+
+-- name: create_billing_point
+-- One metering position on a site: the "billing meter ID" a consumer adds.
+--
+-- point_label_per_site refuses a duplicate label within the site and
+-- point_reference_unique refuses a connection number already registered
+-- anywhere; both reach the handler as a UniqueViolation and become a 409,
+-- rather than silently producing two points that mean the same connection.
+INSERT INTO billing_point (site_id, label, reference)
+VALUES ($1, btrim($2), nullif(btrim($3), ''))
+RETURNING point_id, label, reference;
+
+
+-- name: site_points
+-- Every live billing point on a site, with the meter serving it and whether
+-- that connection carries solar. Drives the meter switcher and the "this
+-- point has no meter yet" affordance.
+--
+-- The meter join is LEFT: a point created but not yet metered is a legal
+-- state (migration d5a7c2b91e40 gave every existing site one, metered or
+-- not), and it is exactly the state the add-a-meter step is for.
+SELECT pt.point_id,
+       pt.label,
+       pt.reference,
+       pt.created_at,
+       d.device_id  AS meter_device_id,
+       d.serial_no  AS meter_serial,
+       d.last_seen_at AS meter_last_seen_at,
+       EXISTS (
+           SELECT 1
+           FROM solar_array sa
+           JOIN device inv ON inv.device_id = sa.inverter_device_id
+           WHERE sa.status <> 'decommissioned'
+             AND inv.removed_at IS NULL
+             AND inv.parent_device_id = d.device_id
+       ) AS has_solar
+FROM billing_point pt
+LEFT JOIN meter_spec ms
+       ON ms.billing_point_id = pt.point_id
+      AND ms.billing_role = 'billing'
+LEFT JOIN device d
+       ON d.device_id = ms.device_id
+      AND d.removed_at IS NULL
+WHERE pt.site_id = $1
+  AND pt.retired_at IS NULL
+ORDER BY pt.created_at, pt.label;
+
+
+-- name: site_point_ids
+-- Just the point ids, oldest first. The billing loop walks these; keeping it
+-- separate from site_points avoids dragging the meter and solar joins
+-- through a call that only needs keys.
+SELECT point_id
+FROM billing_point
+WHERE site_id = $1 AND retired_at IS NULL
+ORDER BY created_at, label;
 
 
 -- name: create_meter_device
@@ -279,18 +360,21 @@ RETURNING device_id;
 
 
 -- name: create_meter_spec
--- Always bidirectional/billing: the onboarding flow only ever registers the
--- one meter rule 7 requires. ct_ratio and phase_count are sane installer
--- defaults, not customer input.
-INSERT INTO meter_spec (device_id, site_id, meter_flow, billing_role, ct_ratio, phase_count)
-VALUES ($1, $2, 'bidirectional', 'billing', '1:1', 1);
+-- Always bidirectional/billing: this path only ever registers the one meter
+-- rule 7 requires *per billing point*. ct_ratio and phase_count are sane
+-- installer defaults, not customer input.
+INSERT INTO meter_spec (
+    device_id, site_id, billing_point_id, meter_flow, billing_role,
+    ct_ratio, phase_count
+)
+VALUES ($1, $2, $3, 'bidirectional', 'billing', '1:1', 1);
 
 
--- name: site_billing_device
+-- name: point_billing_device
 SELECT d.device_id
 FROM device d
 JOIN meter_spec ms ON ms.device_id = d.device_id
-WHERE ms.site_id = $1
+WHERE ms.billing_point_id = $1
   AND ms.billing_role = 'billing'
   AND d.removed_at IS NULL;
 
@@ -331,16 +415,19 @@ RETURNING array_id;
 -- db/sql/seed_demo.sql seeds for its non-solar sites, reviewed on
 -- /government/agreements rather than auto-approved on registration.
 INSERT INTO net_metering_agreement (
-    site_id, billing_device_id, approval_ref, sanctioned_capacity_kw,
+    site_id, billing_point_id, billing_device_id, approval_ref,
+    sanctioned_capacity_kw,
     export_cap_pct, settlement_type, credit_rollover_months,
     effective_from, status
 )
-VALUES ($1, $2, $3, $4, 70.00, 'rollover_only', 12, CURRENT_DATE, 'pending')
+VALUES ($1, $2, $3, $4, $5, 70.00, 'rollover_only', 12, CURRENT_DATE,
+        'pending')
 RETURNING agreement_id;
 
 
--- name: site_solar_status
--- What solar this site already carries, before another array is added.
+-- name: point_solar_status
+-- What solar this billing point already carries, before another array is
+-- added.
 --
 -- capacity_kw is the AC total, summed over DISTINCT inverters: that is the
 -- unit backfill_readings' p_capacity_kw is in (it scales a half-sine peaking
@@ -349,11 +436,16 @@ RETURNING agreement_id;
 --
 -- Decommissioned arrays and removed inverters are excluded -- an array that
 -- no longer exists must not keep inflating the meter's netted export.
+--
+-- Scoped by the inverter's parent meter rather than by site: with several
+-- billing meters on one site, netting a point's meter against the site's
+-- whole fleet of arrays would credit one connection for another's export.
 WITH live AS (
     SELECT sa.array_id, sa.inverter_device_id
     FROM solar_array sa
     JOIN device d ON d.device_id = sa.inverter_device_id
-    WHERE sa.site_id = $1
+    JOIN meter_spec ms ON ms.device_id = d.parent_device_id
+    WHERE ms.billing_point_id = $1
       AND sa.status <> 'decommissioned'
       AND d.removed_at IS NULL
 )
@@ -365,13 +457,14 @@ SELECT (SELECT count(*) FROM live)::int AS array_count,
        ), 0)::numeric AS capacity_kw;
 
 
--- name: site_open_agreement
--- The site's live net-metering agreement, if it has one.
+-- name: point_open_agreement
+-- This billing point's live net-metering agreement, if it has one.
 --
--- nma_no_overlap is a GiST exclusion on (site_id, [effective_from,
--- effective_to)) for every status except 'terminated', so a site can hold at
--- most one open-ended agreement at a time. A second array joins the
--- agreement already covering the site rather than opening a competing one --
+-- nma_no_overlap is a GiST exclusion on (billing_point_id,
+-- [effective_from, effective_to)) for every status except 'terminated', so a
+-- point can hold at most one open-ended agreement at a time -- two
+-- connections at one site each get their own. A second array joins the
+-- agreement already covering the point rather than opening a competing one --
 -- inserting blindly raises an exclusion violation, and UPDATEing the
 -- sanctioned capacity of a live agreement would contradict rule 1 (a raised
 -- capacity is a new agreement with its own effective_from, not an edit).
@@ -380,14 +473,14 @@ SELECT agreement_id,
        status,
        effective_from
 FROM net_metering_agreement
-WHERE site_id = $1
+WHERE billing_point_id = $1
   AND status <> 'terminated'
 ORDER BY effective_from DESC
 LIMIT 1;
 
 
--- name: site_billing_window
--- The earliest month this site's billing meter has readings for, and
+-- name: point_billing_window
+-- The earliest month this point's billing meter has readings for, and
 -- "today" read in the same session zone the caller is pinned to -- so the
 -- handler's month-by-month loop agrees with the database about which months
 -- have actually finished.
@@ -395,5 +488,5 @@ SELECT min(date_trunc('month', dr.interval_start AT TIME ZONE 'Asia/Dhaka'))::da
        CURRENT_DATE AS today
 FROM device_reading dr
 JOIN meter_spec ms ON ms.device_id = dr.device_id
-WHERE ms.site_id = $1
+WHERE ms.billing_point_id = $1
   AND ms.billing_role = 'billing';

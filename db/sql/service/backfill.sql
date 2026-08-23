@@ -42,8 +42,8 @@
 -- warns about, so this function enforces the boundary itself rather than
 -- trusting a guard that isn't there: any interval whose calendar date falls
 -- inside a 'frozen', 'billed' or 'closed' billing_period for the device's
--- site is excluded from the write, full stop. A bill already cut from a
--- period can never be contradicted by a later re-net.
+-- own billing point is excluded from the write, full stop. A bill already
+-- cut from a period can never be contradicted by a later re-net.
 
 CREATE OR REPLACE FUNCTION backfill_readings(
     p_device_id   uuid,
@@ -62,6 +62,12 @@ DECLARE
 
     v_device_type device_type;
     v_site_id     uuid;
+
+    -- The billing point this device's readings belong to, when it has one.
+    -- NULL for a device that serves no connection; the rule-8 guard below
+    -- then falls back to the whole site, which refuses more than it must but
+    -- never less.
+    v_point_id    uuid;
     v_batch_id    uuid;
     v_window_from timestamptz;
     v_window_to   timestamptz;
@@ -81,6 +87,18 @@ BEGIN
         RAISE EXCEPTION 'device % does not exist', p_device_id
             USING ERRCODE = '23503';
     END IF;
+
+    -- A meter names its point directly; an inverter reaches one through the
+    -- billing meter it hangs off (see create_inverter_device). Resolving this
+    -- is what keeps a second connection at an already-billed site
+    -- backfillable: a site-wide guard would see the first point's frozen
+    -- periods and refuse to write a single row for the new meter.
+    SELECT coalesce(own.billing_point_id, parent.billing_point_id)
+      INTO v_point_id
+    FROM device d
+    LEFT JOIN meter_spec own    ON own.device_id = d.device_id
+    LEFT JOIN meter_spec parent ON parent.device_id = d.parent_device_id
+    WHERE d.device_id = p_device_id;
 
     IF v_device_type NOT IN ('meter', 'inverter') THEN
         RAISE EXCEPTION 'backfill_readings supports meter and inverter '
@@ -149,7 +167,10 @@ BEGIN
         FROM curve c
         WHERE NOT EXISTS (
             SELECT 1 FROM billing_period bp
-            WHERE bp.site_id = v_site_id
+            WHERE (CASE WHEN v_point_id IS NULL
+                        THEN bp.site_id = v_site_id
+                        ELSE bp.billing_point_id = v_point_id
+                   END)
               AND bp.status IN ('frozen', 'billed', 'closed')
               AND daterange(bp.period_start, bp.period_end, '[]')
                     @> (c.ts AT TIME ZONE partition_zone)::date
@@ -195,7 +216,10 @@ BEGIN
         FROM curve c
         WHERE NOT EXISTS (
             SELECT 1 FROM billing_period bp
-            WHERE bp.site_id = v_site_id
+            WHERE (CASE WHEN v_point_id IS NULL
+                        THEN bp.site_id = v_site_id
+                        ELSE bp.billing_point_id = v_point_id
+                   END)
               AND bp.status IN ('frozen', 'billed', 'closed')
               AND daterange(bp.period_start, bp.period_end, '[]')
                     @> (c.ts AT TIME ZONE partition_zone)::date

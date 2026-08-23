@@ -6,7 +6,10 @@ This module only bootstraps the app: the connection pool, CORS, and wiring
 every router in. The endpoints themselves live one file per resource --
 routes_auth.py, routes_sites.py, routes_devices.py, routes_issues.py,
 routes_work_orders.py, routes_agreements.py, routes_analytics.py -- mirroring
-one controller per screen. Three conventions govern all of them.
+one controller per screen. orgs.py is the exception to that rule: districts,
+distribution companies and supplier companies are reference data that every
+portal's forms read, so they live together rather than being split across the
+routers that happen to need them. Three conventions govern all of them.
 
 **Every endpoint is authenticated, and authorization has two layers.**
 `require_role(...)` decides whether a role may call an endpoint at all;
@@ -42,6 +45,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routes_agreements import router as agreements_router
 from .routes_analytics import router as analytics_router
 from .routes_auth import router as auth_router
+from .orgs import router as orgs_router
 from .routes_devices import router as devices_router
 from .routes_issues import router as issues_router
 from .routes_sites import router as sites_router
@@ -120,6 +124,7 @@ app.add_middleware(
 # /api/auth/* is the only unauthenticated surface: register, login, and the
 # /me probe (which authenticates itself).
 app.include_router(auth_router)
+app.include_router(orgs_router)
 app.include_router(sites_router)
 app.include_router(devices_router)
 app.include_router(issues_router)

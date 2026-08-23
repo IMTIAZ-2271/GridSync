@@ -84,6 +84,8 @@ export interface Site {
 
 export interface LatestBill {
   bill_id: string;
+  /** Which of the site's connections this bill was cut for. */
+  point_label: string;
   period_start: DateOnly;
   period_end: DateOnly;
   currency: string;
@@ -151,6 +153,10 @@ export interface BillLineItem {
 export interface Bill {
   bill_id: string;
   period_id: string;
+  /** The connection this bill was cut for. A site may hold several. */
+  billing_point_id: string;
+  point_label: string;
+  point_reference: string | null;
   period_start: DateOnly;
   period_end: DateOnly;
   /** Share of expected intervals actually received. Below 100 is worth saying. */
@@ -372,6 +378,27 @@ export type AgreementDecision = "active" | "terminated";
  */
 export type Role = "consumer" | "worker" | "government" | "supplier" | "admin";
 
+export type WorkerKind = "government" | "private";
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+
+/**
+ * What a worker's own row says about them, resolved server-side at sign-in.
+ *
+ * The portal must not ask a worker which kind they are, and must not believe
+ * them if it did -- this comes from `worker_profile`. `approval_status` is
+ * what gates a government worker's queue until an official in their district
+ * approves the registration.
+ */
+export interface WorkerContext {
+  worker_kind: WorkerKind;
+  approval_status: ApprovalStatus;
+  service_district: string;
+  rejection_reason: string | null;
+  distribution_company_id: string | null;
+  distribution_company_code: string | null;
+  distribution_company_name: string | null;
+}
+
 export interface Account {
   account_id: string;
   email: string;
@@ -380,6 +407,14 @@ export interface Account {
   role: Role;
   status: string;
   created_at: Timestamp | null;
+  national_id: string | null;
+  /** Set for role 'worker' only. */
+  worker: WorkerContext | null;
+  /** Set for role 'supplier' only. */
+  supplier_id: string | null;
+  supplier_name: string | null;
+  /** Set for role 'government' only -- the district their code was issued for. */
+  government_district: string | null;
 }
 
 export interface TokenResponse {
@@ -394,32 +429,79 @@ export interface LoginBody {
   password: string;
 }
 
-export interface CustomerRegisterBody {
+/** Every registration collects one. 10, 13 or 17 digits; spaces are fine. */
+export interface RegisterBase {
   email: string;
   password: string;
   full_name: string;
+  national_id: string;
+}
+
+/**
+ * No meter serial: a billing meter ID is deliberately NOT collected at
+ * sign-up. A household claims an existing connection afterwards with
+ * `claimSite`, or builds a new one through the onboarding wizard.
+ */
+export interface CustomerRegisterBody extends RegisterBase {
   phone?: string | null;
+}
+
+export interface WorkerRegisterBody extends RegisterBase {
+  phone?: string | null;
+  worker_kind: WorkerKind;
+  service_district: string;
+  /** Required for a government worker, refused for a private one. */
+  distribution_company_id?: string | null;
   /**
-   * Serial printed on the site's billing meter, e.g. SEED-MTR-03. Omit or
-   * leave blank to register with no site -- the portal then walks the
-   * customer through building one from scratch.
+   * Claims a seeded worker profile instead of creating one, keeping the work
+   * orders that profile already holds. A demo affordance, not part of normal
+   * registration.
    */
-  meter_serial?: string;
+  employee_code?: string;
 }
 
-export interface WorkerRegisterBody {
-  email: string;
-  password: string;
-  full_name: string;
-  /** Employee code on an existing worker profile, e.g. SEED-EMP-002. */
-  employee_code: string;
+export interface GovernmentRegisterBody extends RegisterBase {
+  /** Pre-issued, one per official, single use. e.g. GOV-GULSHAN-01 */
+  official_code: string;
 }
 
-export interface StaffRegisterBody {
-  email: string;
-  password: string;
-  full_name: string;
+export interface SupplierRegisterBody extends RegisterBase {
   registration_code: string;
+  /** Which installer this person works for, e.g. NOOR. */
+  supplier_code: string;
+  job_title?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Organisations -- reference data every registration and issue form reads.
+// ---------------------------------------------------------------------------
+
+export interface District {
+  name: string;
+  latitude: Decimal;
+  longitude: Decimal;
+}
+
+export interface DistributionCompany {
+  company_id: string;
+  code: string;
+  name: string;
+  contact_email: string | null;
+  contact_phone: string | null;
+  districts: string[];
+}
+
+export interface SupplierCompany {
+  supplier_id: string;
+  code: string;
+  name: string;
+  license_no: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  districts: string[];
+  /** Null, not 0, when nobody has rated them -- unrated is not badly rated. */
+  rating_avg: Decimal | null;
+  rating_count: number;
 }
 
 export interface AreaStats {
@@ -457,21 +539,51 @@ export interface SiteCreateBody {
   tariff_plan_id: string;
 }
 
+/**
+ * One metering position on a site -- one connection the utility bills.
+ *
+ * A household may hold several. Rule 7 (exactly one active billing meter) is
+ * enforced per point, not per site, so each of these has its own meter, its
+ * own bills and its own credit balance.
+ */
+export interface BillingPoint {
+  point_id: string;
+  label: string;
+  /** The connection number on the utility's paperwork, if it was given. */
+  reference: string | null;
+  created_at: Timestamp;
+  /** Null while the point exists but its meter has not been registered yet. */
+  meter_device_id: string | null;
+  meter_serial: string | null;
+  meter_last_seen_at: Timestamp | null;
+  has_solar: boolean;
+}
+
 export interface MeterRegisterBody {
   serial_no: string;
   manufacturer: string;
   model: string;
+  /** An existing connection to meter. Omit during onboarding. */
+  point_id?: string;
+  /** Opens a new connection under this name instead. */
+  point_label?: string;
+  point_reference?: string;
 }
 
 export interface MeterRegisterResult {
   device_id: string;
   serial_no: string;
+  point_id: string;
+  point_label: string;
+  point_reference: string | null;
   backfill_from: DateOnly;
   backfill_to: DateOnly;
   readings_backfilled: number;
 }
 
 export interface SolarRegisterBody {
+  /** Required once the site has more than one billing meter. */
+  point_id?: string;
   capacity_kw: number;
   panel_count: number;
   azimuth_deg?: number;
@@ -484,19 +596,22 @@ export interface SolarRegisterResult {
   inverter_device_id: string;
   array_id: string;
   agreement_id: string;
-  /** False when this array joined the agreement already covering the site. */
+  point_id: string;
+  /** False when this array joined the agreement already covering the point. */
   agreement_created: boolean;
-  /** Arrays now on this site, and their combined AC capacity -- this one included. */
+  /** Arrays now on this connection, and their combined AC capacity -- this one included. */
   array_count: number;
-  site_capacity_kw: Decimal;
+  point_capacity_kw: Decimal;
   backfill_from: DateOnly;
   backfill_to: DateOnly;
   readings_backfilled: number;
-  /** The meter's own history, re-netted against the site's TOTAL capacity. */
+  /** The meter's own history, re-netted against the connection's TOTAL capacity. */
   meter_readings_updated: number;
 }
 
 export interface BillingRunResult {
+  billing_point_id: string;
+  point_label: string;
   period_start: DateOnly;
   status: "billed" | "skipped";
   bill_id: string | null;
@@ -592,8 +707,14 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  registerStaff: (role: "government" | "supplier", body: StaffRegisterBody) =>
-    request<TokenResponse>(`/auth/register/${role}`, {
+  registerGovernment: (body: GovernmentRegisterBody) =>
+    request<TokenResponse>("/auth/register/government", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  registerSupplier: (body: SupplierRegisterBody) =>
+    request<TokenResponse>("/auth/register/supplier", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -601,8 +722,28 @@ export const api = {
   // -- data ---------------------------------------------------------------
   listSites: () => request<Site[]>("/sites"),
 
+  // -- organisations --------------------------------------------------------
+  listDistricts: () => request<District[]>("/districts"),
+
+  listDistributionCompanies: (district?: string) =>
+    request<DistributionCompany[]>(
+      `/distribution-companies${district ? `?district=${encodeURIComponent(district)}` : ""}`,
+    ),
+
+  listSuppliers: (district?: string) =>
+    request<SupplierCompany[]>(
+      `/suppliers${district ? `?district=${encodeURIComponent(district)}` : ""}`,
+    ),
+
   // -- onboarding -----------------------------------------------------------
-  listDistricts: () => request<string[]>("/districts"),
+  claimSite: (meterSerial: string) =>
+    request<Site>("/sites/claim", {
+      method: "POST",
+      body: JSON.stringify({ meter_serial: meterSerial }),
+    }),
+
+  listBillingPoints: (siteId: string) =>
+    request<BillingPoint[]>(`/sites/${siteId}/points`),
 
   listTariffPlans: (connectionType?: ConnectionType) =>
     request<TariffPlan[]>(

@@ -272,8 +272,8 @@ export default function CustomerOnboarding() {
                   >
                     <option value="">Select a district</option>
                     {(districtsQuery.data ?? []).map((d) => (
-                      <option key={d} value={d}>
-                        {d}
+                      <option key={d.name} value={d.name}>
+                        {d.name}
                       </option>
                     ))}
                   </select>

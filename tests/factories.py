@@ -94,34 +94,90 @@ async def make_site(conn: asyncpg.Connection, account_id: str = None,
     tariff_plan_id is NOT NULL and, since migration f8adcdc1e0ca, a real FK to
     tariff_plan -- so this mints a plan unless given one. Pass an existing
     plan_id when a test needs several sites on the same tariff.
+
+    district is a real foreign key since migration e7c4b19a2d83, so this uses
+    a canonical one ('Dhanmondi'). The city stays 'Dhaka'; the district used
+    to be 'Dhaka' too, which now only exists as a non-selectable legacy row on
+    the dev database and does not exist at all on a fresh one.
     """
     if account_id is None:
         account_id = await make_account(conn)
     if tariff_plan_id is None:
         tariff_plan_id = await make_tariff_plan(conn)
     tag = overrides.pop("tag", unique_suffix())
-    return await conn.fetchval(
+    site_id = await conn.fetchval(
         """
         INSERT INTO site (
             account_id, tariff_plan_id, label, address_line,
             city, district, latitude, longitude, sanctioned_load_kw
         )
         VALUES ($1, $2, $3, '1 Test Road',
-                'Dhaka', 'Dhaka', 23.780000, 90.279000, 5.000)
+                'Dhaka', 'Dhanmondi', 23.746000, 90.376000, 5.000)
         RETURNING site_id
         """,
         account_id,
         tariff_plan_id,
         overrides.pop("label", f"test-site-{tag}"),
     )
+    # Every site starts with one billing point, same as POST /api/sites.
+    await make_billing_point(conn, site_id, "Main")
+    return site_id
+
+
+_NO_POINT_GIVEN = object()
+
+
+async def make_billing_point(conn: asyncpg.Connection, site_id: str,
+                             label: str = None, **overrides) -> str:
+    """One metering position on a site.
+
+    Rule 7 is enforced per point since migration d5a7c2b91e40, so a test that
+    wants two legal billing meters on one site makes two of these.
+    """
+    tag = overrides.pop("tag", unique_suffix())
+    return await conn.fetchval(
+        """
+        INSERT INTO billing_point (site_id, label, reference)
+        VALUES ($1, $2, $3)
+        RETURNING point_id
+        """,
+        site_id,
+        label if label is not None else f"point-{tag}",
+        overrides.pop("reference", None),
+    )
+
+
+async def site_main_point(conn: asyncpg.Connection, site_id: str) -> str:
+    """The site's first billing point, minting one if it has none.
+
+    make_site already creates 'Main', mirroring POST /api/sites; this is the
+    lookup make_meter uses so that two meters made without an explicit point
+    land on the SAME point and are therefore a rule 7 duplicate -- which is
+    what the duplicate tests are asserting.
+    """
+    point_id = await conn.fetchval(
+        "SELECT point_id FROM billing_point WHERE site_id = $1 "
+        "ORDER BY created_at, label LIMIT 1",
+        site_id,
+    )
+    return point_id or await make_billing_point(conn, site_id, "Main")
 
 
 async def make_meter(conn: asyncpg.Connection, site_id: str,
                      billing_role: str = "billing",
                      meter_flow: str = "bidirectional",
                      **overrides) -> str:
-    """A meter device plus its meter_spec subtype row, as one unit."""
+    """A meter device plus its meter_spec subtype row, as one unit.
+
+    Pass `billing_point_id=` to place it on a specific connection, or
+    `billing_point_id=None` for a meter that serves none (legal for
+    generation_only and check_meter, refused for 'billing' by
+    meter_spec_billing_needs_point).
+    """
     tag = overrides.pop("tag", unique_suffix())
+    point_id = overrides.pop("billing_point_id", _NO_POINT_GIVEN)
+    if point_id is _NO_POINT_GIVEN:
+        point_id = await site_main_point(conn, site_id)
     device_id = await conn.fetchval(
         """
         INSERT INTO device (site_id, device_type, serial_no, device_key_hash)
@@ -133,10 +189,11 @@ async def make_meter(conn: asyncpg.Connection, site_id: str,
     )
     await conn.execute(
         """
-        INSERT INTO meter_spec (device_id, site_id, meter_flow, billing_role)
-        VALUES ($1, $2, $3::meter_flow, $4::meter_billing_role)
+        INSERT INTO meter_spec (device_id, site_id, billing_point_id,
+                                meter_flow, billing_role)
+        VALUES ($1, $2, $3, $4::meter_flow, $5::meter_billing_role)
         """,
-        device_id, site_id, meter_flow, billing_role,
+        device_id, site_id, point_id, meter_flow, billing_role,
     )
     return device_id
 

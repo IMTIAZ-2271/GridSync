@@ -1,11 +1,17 @@
 -- GridSync billing engine.
 --
---   run_billing(p_site_id uuid, p_period_start date) RETURNS uuid
+--   run_billing(p_point_id uuid, p_period_start date) RETURNS uuid
+--
+-- The unit of billing is a BILLING POINT, not a site: since migration
+-- d5a7c2b91e40 a site may hold several billing meters, each on its own point,
+-- each with its own periods, bills and credit balance. Rule 3 is unchanged in
+-- substance -- bill the connection, not the device -- so a meter swap still
+-- leaves the period, the bill and the ledger where they were.
 --
 -- One transaction or none of it. The caller is responsible for the isolation
 -- level -- run under REPEATABLE READ or SERIALIZABLE and retry on 40001, per
 -- CLAUDE.md. The SELECT ... FOR UPDATE on the period row serializes concurrent
--- runs for the same site regardless.
+-- runs for the same point regardless.
 --
 -- Idempotent: a period already in status 'billed' returns its existing
 -- bill_id and changes nothing. That matters because bill, bill_line_item and
@@ -27,11 +33,20 @@ CREATE TYPE tou_bucket AS (
 );
 
 
-CREATE OR REPLACE FUNCTION run_billing(p_site_id uuid, p_period_start date)
+-- Dropped rather than replaced: CREATE OR REPLACE refuses to rename an input
+-- parameter, and p_site_id became p_point_id here.
+DROP FUNCTION IF EXISTS run_billing(uuid, date);
+
+CREATE OR REPLACE FUNCTION run_billing(p_point_id uuid, p_period_start date)
     RETURNS uuid
     LANGUAGE plpgsql
 AS $fn$
 DECLARE
+    -- The point's site. Carried onto billing_period and bill as a snapshot
+    -- (rule 2) and kept honest by the composite FKs against
+    -- billing_point (point_id, site_id).
+    v_site_id      uuid;
+
     -- Period bounds. period_start is normalized to the first of the month so
     -- the caller may pass any date inside it.
     v_period_start date := date_trunc('month', p_period_start)::date;
@@ -86,7 +101,7 @@ BEGIN
     -- -----------------------------------------------------------------
     SELECT period_id, status INTO v_period_id, v_status
     FROM billing_period
-    WHERE site_id = p_site_id AND period_start = v_period_start
+    WHERE billing_point_id = p_point_id AND period_start = v_period_start
     FOR UPDATE;
 
     IF v_period_id IS NOT NULL AND v_status = 'billed' THEN
@@ -96,29 +111,42 @@ BEGIN
     END IF;
 
     -- -----------------------------------------------------------------
-    -- Site context: the plan it is billed under, and its billing meter.
-    -- Rule 7 guarantees there is exactly one.
+    -- Point context: the site it sits on, the plan that site is billed
+    -- under, and the point's own billing meter. Rule 7 guarantees there is
+    -- exactly one of the last.
+    --
+    -- The tariff plan is still the site's: a household is on one tariff
+    -- whether it has one connection or four.
     -- -----------------------------------------------------------------
-    SELECT tp.* INTO v_plan
-    FROM site s JOIN tariff_plan tp ON tp.plan_id = s.tariff_plan_id
-    WHERE s.site_id = p_site_id;
+    SELECT bp.site_id INTO v_site_id
+    FROM billing_point bp
+    WHERE bp.point_id = p_point_id;
 
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'site % does not exist', p_site_id
+        RAISE EXCEPTION 'billing point % does not exist', p_point_id
             USING ERRCODE = '23503';
     END IF;
+
+    -- Split from the lookup above rather than joined into it: plpgsql's
+    -- SELECT ... INTO assigns one column per target, so a %ROWTYPE variable
+    -- cannot share an INTO list with a scalar.
+    SELECT tp.* INTO v_plan
+    FROM site s
+    JOIN tariff_plan tp ON tp.plan_id = s.tariff_plan_id
+    WHERE s.site_id = v_site_id;
 
     SELECT d.device_id, d.interval_minutes INTO v_meter_id, v_interval_min
     FROM meter_spec ms
     JOIN device d ON d.device_id = ms.device_id
-    WHERE ms.site_id = p_site_id
+    WHERE ms.billing_point_id = p_point_id
       AND ms.billing_role = 'billing'
       AND d.removed_at IS NULL;
 
     IF v_meter_id IS NULL THEN
-        RAISE EXCEPTION 'site % has no active billing meter', p_site_id
+        RAISE EXCEPTION 'billing point % has no active billing meter',
+            p_point_id
             USING ERRCODE = '23514',
-                  HINT = 'rule 7: exactly one device per site has '
+                  HINT = 'rule 7: exactly one device per billing point has '
                          'meter_spec.billing_role = ''billing''';
     END IF;
 
@@ -188,13 +216,27 @@ BEGIN
 
     -- Generation is reported by the inverter side, never by the meter
     -- (rule 6), so it is summed separately and only for the snapshot.
+    --
+    -- Scoped to this point's own devices, not the whole site: a site with two
+    -- connections has two sets of hardware, and attributing all of it to
+    -- whichever point billed first would double-count generation across the
+    -- site's bills. A device belongs to this point if its meter_spec names
+    -- the point, or if it hangs off the point's billing meter -- which is how
+    -- an inverter is attached (see create_inverter_device).
+    WITH point_device AS (
+        SELECT d.device_id
+        FROM device d
+        LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
+        WHERE d.site_id = v_site_id
+          AND (ms.billing_point_id = p_point_id
+               OR d.parent_device_id = v_meter_id)
+    )
     SELECT coalesce(round(sum(dr.generation_kwh), 4), 0)::numeric(12,4),
            count(DISTINCT dr.device_id)::smallint
       INTO v_total_generation, v_device_count
     FROM device_reading dr
-    JOIN device d ON d.device_id = dr.device_id
-    WHERE d.site_id = p_site_id
-      AND dr.interval_start >= v_window_from
+    JOIN point_device pd ON pd.device_id = dr.device_id
+    WHERE dr.interval_start >= v_window_from
       AND dr.interval_start <  v_window_to;
 
     -- -----------------------------------------------------------------
@@ -207,13 +249,13 @@ BEGIN
 
     IF v_period_id IS NULL THEN
         INSERT INTO billing_period (
-            site_id, period_start, period_end, status,
+            billing_point_id, site_id, period_start, period_end, status,
             total_import_kwh, total_export_kwh, total_generation_kwh,
             reading_count, expected_reading_count,
             contributing_device_count, frozen_at
         )
         VALUES (
-            p_site_id, v_period_start, v_period_end, 'frozen',
+            p_point_id, v_site_id, v_period_start, v_period_end, 'frozen',
             v_total_import, v_total_export, v_total_generation,
             v_reading_count, v_expected_count,
             coalesce(v_device_count, 0), now()
@@ -239,9 +281,9 @@ BEGIN
         -- Note: RAISE parses '%%' before '%', so a literal percent sign
         -- adjacent to a placeholder reads backwards. Spelled out instead.
         RAISE EXCEPTION
-            'site % period % has coverage % pct (% of % intervals), '
+            'billing point % period % has coverage % pct (% of % intervals), '
             'below the % pct threshold',
-            p_site_id, v_period_start, coalesce(v_coverage, 0),
+            p_point_id, v_period_start, coalesce(v_coverage, 0),
             v_reading_count, v_expected_count, c_coverage_threshold
             USING ERRCODE = '23514',
                   HINT = 'rule 8: never bill an incomplete period -- '
@@ -272,7 +314,7 @@ BEGIN
     SELECT cl.balance_kwh_after, cl.balance_amount_after
       INTO v_opening_kwh, v_opening_amount
     FROM credit_ledger cl
-    WHERE cl.site_id = p_site_id
+    WHERE cl.billing_point_id = p_point_id
     ORDER BY cl.entry_id DESC
     LIMIT 1;
 
@@ -300,23 +342,25 @@ BEGIN
     -- -----------------------------------------------------------------
     -- 4b. The bill. Inserted complete: it is append-only from here
     --     (forbid_mutation), so there is no post-insert correction.
-    --     site_id / account_id / tariff_plan_id are snapshots (rule 2).
+    --     billing_point_id / site_id / account_id / tariff_plan_id are
+    --     snapshots (rule 2).
     -- -----------------------------------------------------------------
     INSERT INTO bill (
-        period_id, site_id, account_id, tariff_plan_id, currency,
+        period_id, billing_point_id, site_id, account_id, tariff_plan_id,
+        currency,
         energy_charge, export_credit_earned, fixed_charge, tax_amount,
         gross_amount, credit_opening_kwh, credit_applied_kwh,
         credit_applied_amount, credit_closing_kwh, amount_due,
         due_date, status
     )
-    SELECT v_period_id, p_site_id, s.account_id, v_plan.plan_id,
+    SELECT v_period_id, p_point_id, v_site_id, s.account_id, v_plan.plan_id,
            v_plan.currency,
            v_energy_charge, v_export_credit, v_fixed_charge, v_tax_amount,
            v_gross_amount, v_opening_kwh, v_applied_kwh,
            v_applied_amount, v_closing_kwh, v_amount_due,
            v_period_end + 15, 'issued'
     FROM site s
-    WHERE s.site_id = p_site_id
+    WHERE s.site_id = v_site_id
     RETURNING bill_id INTO v_bill_id;
 
     -- -----------------------------------------------------------------
@@ -382,11 +426,12 @@ BEGIN
     -- -----------------------------------------------------------------
     IF v_total_export > 0 THEN
         INSERT INTO credit_ledger (
-            site_id, period_id, bill_id, entry_type, kwh_delta, amount_delta,
+            billing_point_id, site_id, period_id, bill_id, entry_type,
+            kwh_delta, amount_delta,
             balance_kwh_after, balance_amount_after, expires_on, note
         )
         VALUES (
-            p_site_id, v_period_id, v_bill_id, 'earned',
+            p_point_id, v_site_id, v_period_id, v_bill_id, 'earned',
             v_total_export, v_export_credit,
             v_opening_kwh + v_total_export,
             v_opening_amount + v_export_credit,
@@ -397,11 +442,12 @@ BEGIN
 
     IF v_applied_kwh > 0 THEN
         INSERT INTO credit_ledger (
-            site_id, period_id, bill_id, entry_type, kwh_delta, amount_delta,
+            billing_point_id, site_id, period_id, bill_id, entry_type,
+            kwh_delta, amount_delta,
             balance_kwh_after, balance_amount_after, note
         )
         VALUES (
-            p_site_id, v_period_id, v_bill_id, 'applied',
+            p_point_id, v_site_id, v_period_id, v_bill_id, 'applied',
             -v_applied_kwh, -v_applied_amount,
             v_opening_kwh + v_total_export - v_applied_kwh,
             v_opening_amount + v_export_credit - v_applied_amount,
@@ -423,7 +469,9 @@ $fn$;
 
 
 COMMENT ON FUNCTION run_billing(uuid, date) IS
-'Bills one site for the month containing p_period_start, in a single '
-'transaction. Idempotent: a period already billed returns its existing '
-'bill_id unchanged. Refuses a period below 95% reading coverage (rule 8). '
-'Run under REPEATABLE READ or SERIALIZABLE and retry on 40001.';
+'Bills one BILLING POINT for the month containing p_period_start, in a '
+'single transaction. A site may hold several points (several billing '
+'meters); each is billed independently and keeps its own credit balance. '
+'Idempotent: a period already billed returns its existing bill_id '
+'unchanged. Refuses a period below 95% reading coverage (rule 8). Run under '
+'REPEATABLE READ or SERIALIZABLE and retry on 40001.';
