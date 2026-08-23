@@ -86,6 +86,14 @@ export default function CustomerOnboarding() {
     tilt_deg: "23",
   });
 
+  // Served rather than hardcoded: the same list validates the POST, and a
+  // district typed freehand used to become its own row in the government's
+  // rollup ("Dhaka", "dhaka" and "g" all existed at once).
+  const districtsQuery = useQuery({
+    queryKey: queryKeys.districts(),
+    queryFn: api.listDistricts,
+  });
+
   const plansQuery = useQuery({
     queryKey: queryKeys.tariffPlans(site.connection_type),
     queryFn: () => api.listTariffPlans(site.connection_type),
@@ -255,14 +263,20 @@ export default function CustomerOnboarding() {
                   />
                 </Field>
                 <Field label="District">
-                  <input
+                  <select
                     value={site.district}
                     onChange={(e) =>
                       setSite((s) => ({ ...s, district: e.target.value }))
                     }
-                    placeholder="Dhanmondi"
                     className={FIELD}
-                  />
+                  >
+                    <option value="">Select a district</option>
+                    {(districtsQuery.data ?? []).map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">

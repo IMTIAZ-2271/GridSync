@@ -598,6 +598,8 @@ export const api = {
   listSites: () => request<Site[]>("/sites"),
 
   // -- onboarding -----------------------------------------------------------
+  listDistricts: () => request<string[]>("/districts"),
+
   listTariffPlans: (connectionType?: ConnectionType) =>
     request<TariffPlan[]>(
       `/tariff-plans${connectionType ? `?connection_type=${connectionType}` : ""}`,
@@ -667,6 +669,7 @@ export const api = {
 export const queryKeys = {
   me: () => ["auth", "me"] as const,
   sites: () => ["sites"] as const,
+  districts: () => ["districts"] as const,
   tariffPlans: (connectionType?: ConnectionType) =>
     ["tariff-plans", connectionType ?? "any"] as const,
   siteSummary: (id: string) => ["sites", id, "summary"] as const,
@@ -692,6 +695,61 @@ export const queryKeys = {
  */
 export function toNumber(value: Decimal | null | undefined): number {
   return value == null ? 0 : Number(value);
+}
+
+/**
+ * Exact sum of NUMERIC decimal strings, as a decimal string.
+ *
+ * `values.reduce((a, b) => a + Number(b), 0)` is the obvious version and it is
+ * the thing this module exists to prevent: a total that reaches the screen
+ * having passed through a double. These are scaled to integers, summed as
+ * BigInt, and formatted back, so the result is exact at `dp` places.
+ *
+ * Use it for any figure that gets *displayed*. `toNumber` remains correct for
+ * a chart axis or a width, where a number is genuinely required.
+ */
+export function sumDecimals(
+  values: (Decimal | null | undefined)[],
+  dp = 4,
+): Decimal {
+  const scale = 10n ** BigInt(dp);
+  let total = 0n;
+  for (const value of values) {
+    if (value == null) continue;
+    total += scaleDecimal(value, dp, scale);
+  }
+  return formatScaled(total, dp, scale);
+}
+
+/** Exact `a - b`, same contract as sumDecimals. May return a negative string. */
+export function subtractDecimals(
+  a: Decimal | null | undefined,
+  b: Decimal | null | undefined,
+  dp = 4,
+): Decimal {
+  const scale = 10n ** BigInt(dp);
+  return formatScaled(
+    scaleDecimal(a ?? "0", dp, scale) - scaleDecimal(b ?? "0", dp, scale),
+    dp,
+    scale,
+  );
+}
+
+function scaleDecimal(value: Decimal, dp: number, scale: bigint): bigint {
+  const negative = value.startsWith("-");
+  const [whole, frac = ""] = (negative ? value.slice(1) : value).split(".");
+  // padEnd then slice: pads a short fraction out to dp and truncates a longer
+  // one, so "1.5" and "1.50000" scale identically.
+  const scaled =
+    BigInt(whole || "0") * scale + BigInt(frac.padEnd(dp, "0").slice(0, dp));
+  return negative ? -scaled : scaled;
+}
+
+function formatScaled(total: bigint, dp: number, scale: bigint): Decimal {
+  const negative = total < 0n;
+  const abs = negative ? -total : total;
+  const frac = (abs % scale).toString().padStart(dp, "0");
+  return `${negative ? "-" : ""}${abs / scale}.${frac}`;
 }
 
 /** Trim a NUMERIC(12,4) to a readable kWh figure without going via a float. */

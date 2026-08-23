@@ -208,21 +208,45 @@ BACKFILL_DAYS = 90
 # to fill them. Approximate centroids for the districts db/sql/seed_demo.sql
 # already uses, with a city-centre fallback for anything else typed in; a
 # demo has no geocoder to call.
-_DHAKA_DISTRICT_COORDS: dict[str, tuple[Decimal, Decimal]] = {
-    "dhanmondi": (Decimal("23.746000"), Decimal("90.376000")),
-    "gulshan": (Decimal("23.791000"), Decimal("90.414000")),
-    "uttara": (Decimal("23.868000"), Decimal("90.399000")),
-    "mirpur": (Decimal("23.806000"), Decimal("90.365000")),
-    "bashundhara": (Decimal("23.815000"), Decimal("90.433000")),
-    "banani": (Decimal("23.793000"), Decimal("90.404000")),
-    "mohammadpur": (Decimal("23.766000"), Decimal("90.359000")),
-    "badda": (Decimal("23.780000"), Decimal("90.425000")),
+# Keyed on the lowercase form, valued (canonical name, latitude, longitude).
+# The canonical name is what gets stored, so `/api/analytics/by-area` -- which
+# GROUPs on the raw column -- cannot report "Dhanmondi" and "dhanmondi" as two
+# districts. That is not hypothetical: before this, free-text entry had already
+# produced `dhaka`, `Dhaka` and `g` as separate rows in the government rollup,
+# and `g` was silently given the default centroid, which is a lie the
+# simulator's solar geometry would later read as fact.
+_DHAKA_DISTRICTS: dict[str, tuple[str, Decimal, Decimal]] = {
+    "dhanmondi": ("Dhanmondi", Decimal("23.746000"), Decimal("90.376000")),
+    "gulshan": ("Gulshan", Decimal("23.791000"), Decimal("90.414000")),
+    "uttara": ("Uttara", Decimal("23.868000"), Decimal("90.399000")),
+    "mirpur": ("Mirpur", Decimal("23.806000"), Decimal("90.365000")),
+    "bashundhara": ("Bashundhara", Decimal("23.815000"), Decimal("90.433000")),
+    "banani": ("Banani", Decimal("23.793000"), Decimal("90.404000")),
+    "mohammadpur": ("Mohammadpur", Decimal("23.766000"), Decimal("90.359000")),
+    "badda": ("Badda", Decimal("23.780000"), Decimal("90.425000")),
 }
-_DHAKA_DEFAULT_COORDS = (Decimal("23.780636"), Decimal("90.279429"))
+
+DISTRICT_NAMES: list[str] = sorted(name for name, _, _ in _DHAKA_DISTRICTS.values())
 
 
-def _district_coordinates(district: str) -> tuple[Decimal, Decimal]:
-    return _DHAKA_DISTRICT_COORDS.get(district.strip().lower(), _DHAKA_DEFAULT_COORDS)
+def _resolve_district(district: str) -> tuple[str, Decimal, Decimal]:
+    """Canonical name plus centroid, or 422.
+
+    Rejecting an unknown district rather than defaulting it is the point. The
+    old fallback accepted anything and quietly assigned a centroid, so a
+    typo -- or the city name typed into the district field -- became a real
+    row that the regulator's rollup then reported as its own district.
+    """
+    resolved = _DHAKA_DISTRICTS.get(district.strip().lower())
+    if resolved is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"unknown district {district.strip()!r}; expected one of: "
+                + ", ".join(DISTRICT_NAMES)
+            ),
+        )
+    return resolved
 
 
 def _next_month(d: date) -> date:
@@ -383,13 +407,23 @@ async def list_tariff_plans(
     return [TariffPlanOut(**dict(r)) for r in rows]
 
 
+@router.get("/api/districts", response_model=list[str])
+async def list_districts(_: CurrentAccount) -> list[str]:
+    """The districts a site may be registered in.
+
+    Served rather than hardcoded in the client so the onboarding form and the
+    validation in `_resolve_district` cannot disagree about the list.
+    """
+    return DISTRICT_NAMES
+
+
 @router.post("/api/sites", response_model=Site, status_code=201)
 async def create_site(
     conn: Conn,
     payload: SiteCreate,
     principal: Annotated[Principal, Depends(require_role("consumer"))],
 ) -> Site:
-    latitude, longitude = _district_coordinates(payload.district)
+    district, latitude, longitude = _resolve_district(payload.district)
     async with conn.transaction():
         try:
             site_id = await conn.fetchval(
@@ -399,7 +433,7 @@ async def create_site(
                 "Home",
                 payload.address_line.strip(),
                 payload.city.strip(),
-                payload.district.strip(),
+                district,
                 payload.postal_code,
                 latitude,
                 longitude,
