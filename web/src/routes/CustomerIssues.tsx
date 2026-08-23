@@ -10,6 +10,17 @@ import {
   type IssueSeverity,
 } from "../lib/api";
 import { useSelectedSite } from "../components/SitePicker";
+// The enum labels and badge tones are shared with the worker portal's triage
+// queue -- see web/src/lib/issues.ts. Two copies would eventually disagree
+// about what `data_gap` is called.
+import {
+  CATEGORIES,
+  ISSUE_STATUS_TONE,
+  SEVERITIES,
+  SEVERITY_TONE,
+  categoryLabel,
+  humanize,
+} from "../lib/issues";
 import {
   Badge,
   Card,
@@ -18,39 +29,6 @@ import {
   ErrorState,
   Skeleton,
 } from "../components/ui";
-
-const CATEGORIES: { value: IssueCategory; label: string }[] = [
-  { value: "billing_dispute", label: "Billing dispute" },
-  { value: "export_not_credited", label: "Export not credited" },
-  { value: "meter_fault", label: "Meter fault" },
-  { value: "inverter_fault", label: "Inverter fault" },
-  { value: "outage", label: "Outage" },
-  { value: "data_gap", label: "Missing readings" },
-  { value: "other", label: "Something else" },
-];
-
-const SEVERITIES: { value: IssueSeverity; label: string }[] = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "critical", label: "Critical" },
-];
-
-const SEVERITY_TONE: Record<IssueSeverity, string> = {
-  low: "neutral",
-  medium: "warning",
-  high: "serious",
-  critical: "critical",
-};
-
-const STATUS_TONE: Record<string, string> = {
-  open: "warning",
-  acknowledged: "neutral",
-  in_progress: "neutral",
-  resolved: "good",
-  closed: "neutral",
-  duplicate: "neutral",
-};
 
 export default function CustomerIssues() {
   const { siteId, site } = useSelectedSite();
@@ -122,8 +100,7 @@ export default function CustomerIssues() {
 }
 
 function IssueRow({ issue }: { issue: Issue }) {
-  const category =
-    CATEGORIES.find((c) => c.value === issue.category)?.label ?? issue.category;
+  const category = categoryLabel(issue.category);
 
   return (
     <li className="border-b border-hairline px-5 py-4 last:border-0">
@@ -141,8 +118,8 @@ function IssueRow({ issue }: { issue: Issue }) {
         </div>
         <div className="flex shrink-0 gap-2">
           <Badge tone={SEVERITY_TONE[issue.severity]}>{issue.severity}</Badge>
-          <Badge tone={STATUS_TONE[issue.status]}>
-            {issue.status.replace(/_/g, " ")}
+          <Badge tone={ISSUE_STATUS_TONE[issue.status]}>
+            {humanize(issue.status)}
           </Badge>
         </div>
       </div>
