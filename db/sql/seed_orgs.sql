@@ -212,4 +212,29 @@ SELECT p.account_id, p.district, p.code
 FROM paired p
 WHERE EXISTS (SELECT 1 FROM claimed WHERE claimed.code = p.code);
 
+-- ---------------------------------------------------------------------------
+-- Give every 'supplier' account a supplier_profile.
+--
+-- Exactly the same gap as the government one above, and found the same way:
+-- `supplier@demo.com` was created when 'supplier' was a bare account_role with
+-- no company behind it. It stayed invisible while the supplier only read
+-- fleet-wide lists, and surfaced the moment a household tried to RATE the firm
+-- that sent a technician -- `service_rating.supplier_id` is derived from the
+-- dispatcher's profile, so an account without one dispatches visits that can
+-- never be rated.
+--
+-- Attaches the lowest-coded firm, deterministically, so re-running picks the
+-- same one. Staff attach to a company rather than being one (docs/decisions.md),
+-- so this is a membership row, not a new organisation.
+-- ---------------------------------------------------------------------------
+INSERT INTO supplier_profile (account_id, supplier_id, job_title)
+SELECT a.account_id,
+       (SELECT supplier_id FROM supplier_company ORDER BY code LIMIT 1),
+       'Dispatcher'
+FROM account a
+WHERE a.role = 'supplier'
+  AND NOT EXISTS (
+      SELECT 1 FROM supplier_profile sp WHERE sp.account_id = a.account_id
+  );
+
 COMMIT;

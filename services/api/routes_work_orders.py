@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .auth import Principal, require_role
 from .db import Conn
@@ -28,6 +29,11 @@ class Assignment(BaseModel):
     job_role: str
     status: str
     assigned_at: datetime
+    # The two clocks services/jobs sweeps. On the assignment so a worker can see
+    # how long they have to answer and a dispatcher can see how long an offer
+    # has been sitting -- neither has to know the durations to read the state.
+    offer_expires_at: datetime | None = None
+    start_deadline_at: datetime | None = None
 
 
 class WorkOrder(BaseModel):
@@ -195,6 +201,15 @@ async def _notify_household(
 # both -- see services/jobs/deadlines.py for what happens when they pass.
 # --------------------------------------------------------------------------
 
+# worker_availability is (available, busy, off_duty, on_leave) -- there is no
+# 'unavailable'. An earlier version of this file compared against that
+# non-existent label, so the check silently never fired and an off-duty worker
+# could be handed a three-hour offer they would never see. 'busy' is
+# deliberately NOT here: it means loaded, not unreachable, and load is the
+# dispatcher's judgement call, made against the open-job count on the worker
+# list rather than refused outright by the API.
+OFF_SHIFT = frozenset({"off_duty", "on_leave"})
+
 OFFER_TTL = timedelta(hours=3)
 START_DEADLINE = timedelta(days=1)
 
@@ -276,8 +291,11 @@ async def offer_assignment(
             )
         if worker["left_on"] is not None:
             raise HTTPException(status_code=409, detail="worker has left")
-        if worker["availability"] == "unavailable":
-            raise HTTPException(status_code=409, detail="worker is unavailable")
+        if worker["availability"] in OFF_SHIFT:
+            raise HTTPException(
+                status_code=409,
+                detail=f"worker is {worker['availability'].replace('_', ' ')}",
+            )
 
         await conn.fetchrow(
             sql("offer_assignment"),
@@ -382,3 +400,157 @@ async def respond_to_assignment(
             ),
         )
     return state
+
+
+# --------------------------------------------------------------------------
+# Dispatch: raising an order, and choosing who to offer it to
+#
+# Supplier requirement 3. Until now a work order could only be created by hand
+# in SQL, which made the whole assignment lifecycle -- offer, accept, the two
+# deadline sweeps -- reachable only for rows somebody had inserted manually.
+# --------------------------------------------------------------------------
+
+class WorkOrderCreate(BaseModel):
+    """Raise a visit.
+
+    Either `issue_id` or `site_id`, not both and not neither. An order raised
+    from an issue inherits that issue's site and device **in SQL**, so a
+    dispatcher cannot file an order against issue X on site Y -- that pairing is
+    the audit trail behind "this visit happened because of that complaint".
+    """
+
+    issue_id: UUID | None = None
+    site_id: UUID | None = None
+    device_id: UUID | None = None
+    order_type: Literal[
+        "meter_install", "meter_swap", "meter_removal", "inverter_service",
+        "inspection", "seal_check", "disconnection", "reconnection",
+    ]
+    # 1 is the top of this scale, not the bottom. Left unset it inherits the
+    # issue's own priority, which is the number the household's complaint
+    # already carried.
+    priority: int | None = Field(default=None, ge=1, le=5)
+    scheduled_for: datetime | None = None
+
+
+class DispatchableIssue(BaseModel):
+    issue_id: UUID
+    site_id: UUID
+    site_label: str
+    district: str
+    device_id: UUID | None
+    device_serial: str | None
+    category: str
+    severity: str
+    status: str
+    title: str
+    description: str | None
+    priority: int
+    reported_at: datetime
+    reported_by_name: str
+
+
+class AssignableWorker(BaseModel):
+    account_id: UUID
+    full_name: str
+    employee_code: str
+    service_district: str
+    worker_kind: str
+    availability: str
+    max_daily_jobs: int
+    distribution_company_name: str | None
+    open_jobs: int
+    # NULL until something writes service_rating. Deliberately not defaulted to
+    # 0: "not yet rated" and "rated badly" must not look the same.
+    rating_avg: Decimal | None
+    rating_count: int
+
+
+@router.post("/api/work-orders", response_model=WorkOrder, status_code=201)
+async def create_work_order(
+    conn: Conn,
+    payload: WorkOrderCreate,
+    principal: Annotated[Principal, Depends(require_role("supplier", "admin"))],
+) -> WorkOrder:
+    """Raise a work order, optionally against an issue.
+
+    Supplier and admin. A worker cannot raise their own job for the same reason
+    they cannot assign themselves one: the queue is the dispatcher's to balance.
+    Government is excluded because a regulator does not dispatch the utility's
+    crews -- the same line drawn on the status endpoint.
+
+    The order starts in `draft`. Offering it to somebody is what moves it to
+    `dispatched`, and the deadline sweep is what can move it back.
+    """
+    if (payload.issue_id is None) == (payload.site_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="give either issue_id or site_id, not both and not neither",
+        )
+
+    async with conn.transaction():
+        if payload.issue_id is not None:
+            issue = await conn.fetchrow(sql("get_issue"), payload.issue_id)
+            if issue is None:
+                raise HTTPException(status_code=404, detail="issue not found")
+
+        try:
+            order_id = await conn.fetchval(
+                sql("create_work_order"),
+                principal.account_id,
+                payload.issue_id,
+                payload.site_id,
+                payload.device_id,
+                payload.order_type,
+                payload.priority,
+                payload.scheduled_for,
+            )
+        except asyncpg.ForeignKeyViolationError as exc:
+            # site_id or device_id names something that does not exist. The
+            # issue path is already checked above, so this is the bare-site one.
+            raise HTTPException(
+                status_code=422, detail=f"unknown reference: {exc.constraint_name}"
+            ) from exc
+
+        row = await conn.fetchrow(sql("get_work_order"), order_id)
+    return _work_order(row)
+
+
+@router.get("/api/work-orders/dispatchable-issues",
+            response_model=list[DispatchableIssue])
+async def dispatchable_issues(
+    conn: Conn,
+    _: Annotated[Principal, Depends(require_role("supplier", "admin"))],
+) -> list[DispatchableIssue]:
+    """Unresolved issues with no live work order against them.
+
+    The dispatcher's inbox: complaints nobody has raised a visit for. An issue
+    whose order was cancelled or failed comes back into this list, because the
+    fault is still real.
+    """
+    rows = await conn.fetch(sql("dispatchable_issues"))
+    return [DispatchableIssue(**dict(r)) for r in rows]
+
+
+@router.get("/api/workers", response_model=list[AssignableWorker])
+async def assignable_workers(
+    conn: Conn,
+    _: Annotated[
+        Principal, Depends(require_role("supplier", "government", "admin"))
+    ],
+    district: str | None = None,
+    with_capacity: bool = False,
+) -> list[AssignableWorker]:
+    """Who a job can be offered to, best-rated then least-loaded.
+
+    The same approved / employed / on-shift gate `offerable_worker` applies at
+    the moment of offering, so the dispatcher never sees a name the next call
+    would refuse.
+
+    `?district=` narrows to one service district. Worker requirement 4 wants the
+    queue itself scoped by region; this is the dispatcher's half of that, and it
+    is a filter rather than a hard rule because a neighbouring district's
+    engineer is sometimes exactly who you want.
+    """
+    rows = await conn.fetch(sql("assignable_workers"), district, with_capacity)
+    return [AssignableWorker(**dict(r)) for r in rows]

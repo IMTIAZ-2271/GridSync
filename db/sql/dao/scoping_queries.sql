@@ -132,7 +132,14 @@ SELECT w.order_id,
                    'worker_name', a.full_name,
                    'job_role',    wa.job_role,
                    'status',      wa.status,
-                   'assigned_at', wa.assigned_at
+                   'assigned_at', wa.assigned_at,
+                   -- The two clocks services/jobs sweeps. Carried on the
+                   -- assignment so a worker can see how long they have to
+                   -- answer, and a dispatcher can see how long an offer has
+                   -- been sitting, without either of them having to guess at
+                   -- the durations.
+                   'offer_expires_at',  wa.offer_expires_at,
+                   'start_deadline_at', wa.start_deadline_at
                )
                ORDER BY wa.job_role, a.full_name
            ) FILTER (WHERE wa.account_id IS NOT NULL),
