@@ -17,10 +17,12 @@ import WorkerOrders from "./routes/WorkerOrders";
 import WorkerIssues from "./routes/WorkerIssues";
 import GovernmentByArea from "./routes/GovernmentByArea";
 import GovernmentAgreements from "./routes/GovernmentAgreements";
+import GovernmentNetMetering from "./routes/GovernmentNetMetering";
 import GovernmentWorkers from "./routes/GovernmentWorkers";
 import SupplierSites from "./routes/SupplierSites";
 import SupplierApplications from "./routes/SupplierApplications";
 import SupplierDispatch from "./routes/SupplierDispatch";
+import SupplierIssues from "./routes/SupplierIssues";
 import SupplierEquipment from "./routes/SupplierEquipment";
 
 /** Send "/" to the signed-in role's portal, or to the login page. */
@@ -66,6 +68,7 @@ export default function App() {
           <Route path="government">
             <Route index element={<GovernmentByArea />} />
             <Route path="agreements" element={<GovernmentAgreements />} />
+            <Route path="net-metering" element={<GovernmentNetMetering />} />
             <Route path="workers" element={<GovernmentWorkers />} />
           </Route>
 
@@ -73,6 +76,7 @@ export default function App() {
             <Route index element={<SupplierSites />} />
             <Route path="dispatch" element={<SupplierDispatch />} />
             <Route path="applications" element={<SupplierApplications />} />
+            <Route path="issues" element={<SupplierIssues />} />
             <Route path="equipment" element={<SupplierEquipment />} />
           </Route>
         </Route>

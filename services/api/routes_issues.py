@@ -38,6 +38,16 @@ class Issue(BaseModel):
     resolved_at: datetime | None
     reported_by_account_id: UUID
     reported_by_name: str
+    # Consumer requirement 6: who the complaint names. Both optional -- a data
+    # gap is nobody's fault until someone looks, and demanding a culprit on
+    # every report would only produce wrong ones.
+    distribution_company_id: UUID | None = None
+    distribution_company_name: str | None = None
+    supplier_id: UUID | None = None
+    supplier_name: str | None = None
+    # Supplier inbox only: is this a complaint about US, or one we are merely
+    # involved in? The difference is the whole point of the page.
+    against_us: bool | None = None
 
 
 IssueCategory = Literal[
@@ -64,6 +74,13 @@ class IssueCreate(BaseModel):
     priority: int = Field(default=3, ge=1, le=5)
     device_id: UUID | None = None
     bill_id: UUID | None = None
+    # At most one of these is meaningful, and which one depends on the
+    # category -- a meter fault is the utility's, a bad installation is the
+    # installer's. Not enforced as a pair here: the schema allows both, a
+    # billing dispute about an export credit can legitimately involve both
+    # parties, and refusing that combination would be inventing a rule.
+    distribution_company_id: UUID | None = None
+    supplier_id: UUID | None = None
 
 
 # --------------------------------------------------------------------------
@@ -72,7 +89,21 @@ class IssueCreate(BaseModel):
 
 @router.get("/api/issues", response_model=list[Issue])
 async def list_issues(conn: Conn, principal: CurrentAccount) -> list[Issue]:
-    if principal.sees_every_site:
+    if principal.role == "supplier":
+        # Supplier requirement 2. A supplier is a fleet-wide reader for most
+        # things, but an inbox is not a fleet: `issues_for_supplier` narrows to
+        # complaints named against this firm plus the sites it actually works
+        # on, and flags which is which.
+        supplier_id = await conn.fetchval(
+            "SELECT supplier_id FROM supplier_profile WHERE account_id = $1",
+            principal.account_id,
+        )
+        if supplier_id is None:
+            raise HTTPException(
+                status_code=403, detail="this account is not attached to a supplier"
+            )
+        rows = await conn.fetch(sql("issues_for_supplier"), supplier_id)
+    elif principal.sees_every_site:
         rows = await conn.fetch(sql("list_issues"))
     elif principal.role == "consumer":
         rows = await conn.fetch(sql("issues_for_account"), principal.account_id)
@@ -107,6 +138,8 @@ async def create_issue(
             payload.title,
             payload.description,
             payload.priority,
+            payload.distribution_company_id,
+            payload.supplier_id,
         )
     except asyncpg.ForeignKeyViolationError as exc:
         # site_id is already validated above, so this is a bad device_id or
@@ -246,3 +279,35 @@ async def _notify_reporter(
         # must not be told twice that the same thing happened.
         dedupe_key=f"issue:{issue['issue_id']}:{status}",
     )
+
+
+class IssueTarget(BaseModel):
+    """A company a complaint from this site could reasonably be against."""
+
+    kind: Literal["distribution", "supplier"]
+    id: UUID
+    name: str
+    # True when this company is actually attached to the site -- the utility on
+    # its metering, or the installer of its array -- as opposed to one that
+    # merely serves the district. The form preselects an attached one.
+    attached: bool
+
+
+@router.get("/api/sites/{site_id}/issue-targets", response_model=list[IssueTarget])
+async def issue_targets(
+    conn: Conn, site_id: UUID, principal: CurrentAccount
+) -> list[IssueTarget]:
+    """Who a complaint from this site could name.
+
+    Consumer requirement 6 asks the household to pick the distribution company
+    for a meter fault and the installer for a solar one. Both are already known
+    to the system — the utility is on the site's billing points, the installer
+    on its arrays — so the form arrives pre-answered rather than asking someone
+    to remember who fitted their panels three years ago.
+
+    Candidates, not a decision: a site with two connections may have two
+    utilities, and the household confirms which one it means.
+    """
+    await visible_site_or_404(conn, principal, site_id)
+    rows = await conn.fetch(sql("issue_targets_for_site"), site_id)
+    return [IssueTarget(**dict(r)) for r in rows]

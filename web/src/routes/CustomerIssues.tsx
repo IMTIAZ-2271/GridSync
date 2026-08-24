@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -15,6 +15,8 @@ import { useSelectedSite } from "../components/SitePicker";
 // about what `data_gap` is called.
 import {
   CATEGORIES,
+  CATEGORY_TARGET,
+  TARGET_LABEL,
   ISSUE_STATUS_TONE,
   SEVERITIES,
   SEVERITY_TONE,
@@ -152,6 +154,33 @@ function IssueForm({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [done, setDone] = useState(false);
+  // Consumer requirement 6. Which company the dropdown names depends on the
+  // category: a meter fault is the utility's, a bad installation the
+  // installer's. Some categories name nobody, and the field disappears rather
+  // than offering an irrelevant list.
+  const [target, setTarget] = useState("");
+
+  const targetKind = CATEGORY_TARGET[category] ?? null;
+  const targets = useQuery({
+    queryKey: queryKeys.issueTargets(siteId!),
+    queryFn: () => api.issueTargets(siteId!),
+    enabled: !!siteId,
+  });
+  const choices = (targets.data ?? []).filter((t) => t.kind === targetKind);
+
+  // Preselect the company actually attached to this site -- its own utility,
+  // or the firm that fitted its panels -- rather than making someone pick from
+  // a list they have no way to rank. Re-runs when the category changes, since
+  // that changes which list is on screen.
+  useEffect(() => {
+    if (!targetKind) {
+      setTarget("");
+      return;
+    }
+    const attached = choices.find((t) => t.attached);
+    setTarget(attached?.id ?? (choices.length === 1 ? choices[0].id : ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetKind, targets.data]);
 
   const create = useMutation({
     mutationFn: () =>
@@ -162,6 +191,9 @@ function IssueForm({
         title: title.trim(),
         description: description.trim() || null,
         device_id: deviceId ?? null,
+        distribution_company_id:
+          targetKind === "distribution" && target ? target : null,
+        supplier_id: targetKind === "supplier" && target ? target : null,
       }),
     onSuccess: () => {
       setTitle("");
@@ -215,6 +247,40 @@ function IssueForm({
             ))}
           </select>
         </div>
+
+        {targetKind && (
+          <div>
+            <label htmlFor="issue-target" className="text-xs font-medium text-ink-2">
+              {TARGET_LABEL[targetKind]}
+            </label>
+            <select
+              id="issue-target"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              className={`mt-1 ${FIELD}`}
+            >
+              <option value="">
+                {targets.isPending
+                  ? "Loading…"
+                  : choices.length === 0
+                    ? "Nobody on record for your area"
+                    : "Not sure / leave blank"}
+              </option>
+              {choices.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                  {t.attached ? " — yours" : ""}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-ink-muted">
+              {targetKind === "distribution"
+                ? "The company that owns your meter and issues your bill."
+                : "The company that fitted your panels."}{" "}
+              Leave it blank if you are not sure — it can be worked out later.
+            </p>
+          </div>
+        )}
 
         <div>
           <label htmlFor="issue-severity" className="text-xs font-medium text-ink-2">

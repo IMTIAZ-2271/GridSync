@@ -66,6 +66,7 @@ export const PORTALS: Portal[] = [
     routes: [
       { path: "", label: "By area" },
       { path: "agreements", label: "Pending agreements" },
+      { path: "net-metering", label: "Net metering" },
       { path: "workers", label: "Worker approvals" },
     ],
   },
@@ -79,6 +80,7 @@ export const PORTALS: Portal[] = [
       { path: "", label: "Sites" },
       { path: "dispatch", label: "Dispatch" },
       { path: "applications", label: "Applications" },
+      { path: "issues", label: "Complaints" },
       { path: "equipment", label: "Equipment" },
     ],
   },

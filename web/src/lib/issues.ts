@@ -86,3 +86,37 @@ export const NEXT_ISSUE_STATUS: Record<
   closed: null,
   duplicate: null,
 };
+
+/**
+ * Which company a complaint of this kind is against.
+ *
+ * Consumer requirement 6: a meter fault is the distribution company's, a bad
+ * installation is the installer's. Some categories name nobody -- a data gap is
+ * not anyone's fault until someone looks, and demanding a culprit on every
+ * report would only produce wrong ones.
+ *
+ * A default, not a rule: the API accepts either field on any category, because
+ * a billing dispute about an uncredited export can legitimately involve both
+ * parties and refusing that would be inventing a constraint the schema does not
+ * have.
+ */
+export const CATEGORY_TARGET: Record<
+  string,
+  "distribution" | "supplier" | null
+> = {
+  meter_fault: "distribution",
+  outage: "distribution",
+  billing_dispute: "distribution",
+  export_not_credited: "distribution",
+  net_metering: "distribution",
+  inverter_fault: "supplier",
+  solar_installation: "supplier",
+  supplier_service: "supplier",
+  data_gap: null,
+  other: null,
+};
+
+export const TARGET_LABEL: Record<"distribution" | "supplier", string> = {
+  distribution: "Which utility is this about?",
+  supplier: "Which installer is this about?",
+};

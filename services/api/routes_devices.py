@@ -17,7 +17,7 @@ assignments cover.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from .auth import Principal, require_role, visible_site_or_404
 from .db import Conn
 from .queries import sql
-from .types import Energy
+from .types import Energy, Rate
 
 router = APIRouter(tags=["devices"])
 
@@ -120,3 +120,64 @@ async def fleet_devices(
     """
     rows = await conn.fetch(sql("device_health"), None)
     return [SiteDevice(**dict(r)) for r in rows]
+
+
+class ArrayHealth(BaseModel):
+    """One solar array, judged on what the telemetry actually knows.
+
+    Consumer requirement 8 asks for per-panel health; CLAUDE.md decision 2
+    settled it as per-array, because an inverter reports one figure for
+    everything wired to it and splitting that across twelve panels would be
+    arithmetic dressed as measurement.
+    """
+
+    array_id: UUID
+    site_id: UUID
+    label: str | None
+    status: str
+    panel_count: int | None
+    panel_watt_peak: int | None
+    dc_capacity_kw: Energy
+    azimuth_deg: int | None
+    tilt_deg: int | None
+    shading_factor: Rate | None
+    commissioned_on: date | None
+    installed_by_supplier_id: UUID | None
+    installed_by_supplier_name: str | None
+    inverter_device_id: UUID
+    inverter_serial: str
+    intervals_received: int
+    intervals_expected: int
+    last_reading_at: datetime | None
+    generation_kwh: Energy
+    # False when the inverter carries more than one array, in which case its
+    # generation cannot be attributed and the yield below is NULL.
+    sole_array_on_inverter: bool
+    specific_yield_kwh_per_kw: Energy | None
+
+
+@router.get("/api/sites/{site_id}/arrays", response_model=list[ArrayHealth])
+async def site_arrays(
+    conn: Conn,
+    site_id: UUID,
+    principal: Annotated[
+        Principal,
+        Depends(require_role("consumer", "worker", "government", "supplier", "admin")),
+    ],
+) -> list[ArrayHealth]:
+    """Array-level health for a site.
+
+    Two facts per array, and only two, because they are the two the system can
+    stand behind: whether its inverter is reporting, and how much it produced
+    per kW of the capacity it was built with. The second is what catches the
+    fault that matters — a shaded, soiled or partly-failed array still reports,
+    it just reports less.
+
+    Yield is withheld rather than guessed when one inverter carries several
+    arrays: the generation figure does not say which array produced what, and
+    dividing it by one array's capacity would quietly report the sum over the
+    part.
+    """
+    await visible_site_or_404(conn, principal, site_id)
+    rows = await conn.fetch(sql("array_health_for_site"), site_id)
+    return [ArrayHealth(**dict(r)) for r in rows]

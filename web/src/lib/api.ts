@@ -299,6 +299,62 @@ export interface ApplicationCreateBody {
   notes?: string | null;
 }
 
+/**
+ * One solar array, judged on what the telemetry actually knows.
+ *
+ * Per-array, not per-panel: an inverter reports one figure for everything wired
+ * to it, so a per-panel verdict would be arithmetic dressed as measurement.
+ */
+export interface ArrayHealth {
+  array_id: string;
+  site_id: string;
+  label: string | null;
+  status: string;
+  panel_count: number | null;
+  panel_watt_peak: number | null;
+  dc_capacity_kw: Decimal;
+  azimuth_deg: number | null;
+  tilt_deg: number | null;
+  shading_factor: Decimal | null;
+  commissioned_on: string | null;
+  installed_by_supplier_id: string | null;
+  installed_by_supplier_name: string | null;
+  inverter_device_id: string;
+  inverter_serial: string;
+  intervals_received: number;
+  intervals_expected: number;
+  last_reading_at: Timestamp | null;
+  generation_kwh: Decimal;
+  /** False when one inverter carries several arrays; yield is then null. */
+  sole_array_on_inverter: boolean;
+  specific_yield_kwh_per_kw: Decimal | null;
+}
+
+export interface NetMeteringOutcome {
+  district: string;
+  site_count: number;
+  sites_in_credit: number;
+  earned_kwh: Decimal;
+  earned_amount: Decimal;
+  applied_kwh: Decimal;
+  applied_amount: Decimal;
+  balance_kwh: Decimal;
+  balance_amount: Decimal;
+  /** Share of everything earned that has been spent. Null before anything is. */
+  applied_pct: Decimal | null;
+}
+
+export interface AgreementSummary {
+  status: string;
+  agreement_count: number;
+  sanctioned_capacity_kw: Decimal;
+}
+
+export interface NetMeteringReport {
+  by_area: NetMeteringOutcome[];
+  agreements: AgreementSummary[];
+}
+
 export interface Reading {
   interval_start: Timestamp;
   import_kwh: Decimal;
@@ -453,6 +509,23 @@ export interface Issue {
   resolved_at: Timestamp | null;
   reported_by_account_id: string;
   reported_by_name: string;
+  /** Who the complaint names. Both optional -- most reports name nobody. */
+  distribution_company_id: string | null;
+  distribution_company_name: string | null;
+  supplier_id: string | null;
+  supplier_name: string | null;
+  /** Supplier inbox only: a complaint about us, not merely one we touch. */
+  against_us?: boolean | null;
+}
+
+/** A company a complaint from a given site could reasonably be against. */
+export interface IssueTarget {
+  kind: "distribution" | "supplier";
+  id: string;
+  name: string;
+  /** Attached to this site (its utility, its installer) rather than merely
+   *  serving the district. The form preselects one of these. */
+  attached: boolean;
 }
 
 export interface IssueCreate {
@@ -464,6 +537,10 @@ export interface IssueCreate {
   priority?: number;
   device_id?: string | null;
   bill_id?: string | null;
+  /** Consumer requirement 6: which company the complaint names. At most one is
+   *  meaningful, and which depends on the category -- see CATEGORY_TARGET. */
+  distribution_company_id?: string | null;
+  supplier_id?: string | null;
 }
 
 export type WorkOrderStatus =
@@ -1116,6 +1193,18 @@ export const api = {
       body: JSON.stringify({ status, notes: notes ?? null }),
     }),
 
+  issueTargets: (siteId: string) =>
+    request<IssueTarget[]>(`/sites/${siteId}/issue-targets`),
+
+  siteArrays: (siteId: string) =>
+    request<ArrayHealth[]>(`/sites/${siteId}/arrays`),
+
+  netMetering: (district?: string) =>
+    request<NetMeteringReport>(
+      "/analytics/net-metering" +
+        (district ? `?district=${encodeURIComponent(district)}` : ""),
+    ),
+
   siteBills: (siteId: string) => request<Bill[]>(`/sites/${siteId}/bills`),
 
   siteDevices: (siteId: string) =>
@@ -1201,11 +1290,16 @@ export const queryKeys = {
     ["sites", id, "readings", days] as const,
   siteBills: (id: string) => ["sites", id, "bills"] as const,
   siteDevices: (id: string) => ["sites", id, "devices"] as const,
+  siteArrays: (id: string) => ["sites", id, "arrays"] as const,
+  netMetering: (district?: string) =>
+    ["analytics", "net-metering", district ?? "all"] as const,
   sitePoints: (id: string) => ["sites", id, "points"] as const,
   consumptionLimit: (id: string) =>
     ["sites", id, "consumption-limit"] as const,
   fleetDevices: () => ["devices"] as const,
   issues: () => ["issues"] as const,
+  issueTargets: (siteId: string) =>
+    ["sites", siteId, "issue-targets"] as const,
   visits: () => ["visits"] as const,
   solarApplications: (openOnly = false) =>
     ["solar-applications", openOnly ? "open" : "all"] as const,

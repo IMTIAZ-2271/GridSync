@@ -9,6 +9,7 @@ import {
   type SiteDevice,
 } from "../lib/api";
 import { useSelectedSite } from "../components/SitePicker";
+import ArrayHealthCard from "../components/ArrayHealthCard";
 // Shared with the supplier's fleet inventory -- see web/src/lib/devices.ts.
 // Both pages read the same `health` verdict off the same query, so both have
 // to call it the same thing.
@@ -45,6 +46,7 @@ export default function CustomerDevices() {
   });
 
   return (
+    <div className="flex flex-col gap-6">
     <Card>
       <CardHeader
         title="Equipment"
@@ -86,6 +88,12 @@ export default function CustomerDevices() {
         heartbeat.
       </p>
     </Card>
+
+    {/* Consumer requirement 8. Below the devices because an array is made
+        of one of them: the inverter above is the thing that reports, and
+        this is what its numbers mean for the panels. */}
+    {siteId && <ArrayHealthCard siteId={siteId} />}
+    </div>
   );
 }
 

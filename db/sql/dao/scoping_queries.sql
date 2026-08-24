@@ -67,10 +67,19 @@ SELECT i.issue_id,
        i.acknowledged_at,
        i.resolved_at,
        i.reported_by_account_id,
-       a.full_name AS reported_by_name
+       a.full_name AS reported_by_name,
+       -- Consumer requirement 6: who the complaint is against. Both nullable
+       -- and both optional -- a data gap is nobody's fault until someone looks,
+       -- and forcing a name onto every report would just produce wrong ones.
+       i.distribution_company_id,
+       dc.name AS distribution_company_name,
+       i.supplier_id,
+       sc.name AS supplier_name
 FROM issue i
 JOIN site s ON s.site_id = i.site_id
 JOIN account a ON a.account_id = i.reported_by_account_id
+LEFT JOIN distribution_company dc ON dc.company_id = i.distribution_company_id
+LEFT JOIN supplier_company sc ON sc.supplier_id = i.supplier_id
 WHERE s.account_id = $1
 ORDER BY i.reported_at DESC;
 
@@ -92,10 +101,19 @@ SELECT i.issue_id,
        i.acknowledged_at,
        i.resolved_at,
        i.reported_by_account_id,
-       a.full_name AS reported_by_name
+       a.full_name AS reported_by_name,
+       -- Consumer requirement 6: who the complaint is against. Both nullable
+       -- and both optional -- a data gap is nobody's fault until someone looks,
+       -- and forcing a name onto every report would just produce wrong ones.
+       i.distribution_company_id,
+       dc.name AS distribution_company_name,
+       i.supplier_id,
+       sc.name AS supplier_name
 FROM issue i
 JOIN site s ON s.site_id = i.site_id
 JOIN account a ON a.account_id = i.reported_by_account_id
+LEFT JOIN distribution_company dc ON dc.company_id = i.distribution_company_id
+LEFT JOIN supplier_company sc ON sc.supplier_id = i.supplier_id
 WHERE EXISTS (
     SELECT 1
     FROM work_order_assignment wa
