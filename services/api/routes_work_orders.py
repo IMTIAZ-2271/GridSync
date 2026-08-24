@@ -40,6 +40,7 @@ class WorkOrder(BaseModel):
     order_id: UUID
     site_id: UUID
     site_label: str
+    district: str
     issue_id: UUID | None
     device_id: UUID | None
     order_type: str
@@ -295,6 +296,26 @@ async def offer_assignment(
             raise HTTPException(
                 status_code=409,
                 detail=f"worker is {worker['availability'].replace('_', ' ')}",
+            )
+        # Worker requirement 4: a technician only receives requests from their
+        # own region. Enforced here rather than left to the picker's filter,
+        # because a filter is a convenience and this is a rule -- the worker's
+        # queue is scoped by assignment, so the only place region can actually
+        # be enforced is the moment an assignment is created.
+        #
+        # This reverses an earlier judgement in `assignable_workers`, which
+        # treated district as a filter on the grounds that a neighbouring
+        # district's engineer is sometimes exactly who you want. The
+        # requirement is explicit and wins; the picker now defaults to the
+        # order's own district to match.
+        if worker["service_district"] != order["district"]:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{worker['full_name']} works in "
+                    f"{worker['service_district']}, and this job is in "
+                    f"{order['district']}"
+                ),
             )
 
         await conn.fetchrow(

@@ -7,6 +7,7 @@
 SELECT w.order_id,
        w.site_id,
        s.label AS site_label,
+       s.district,
        w.issue_id,
        w.device_id,
        w.order_type,
@@ -42,7 +43,7 @@ FROM work_order w
 JOIN site s ON s.site_id = w.site_id
 LEFT JOIN work_order_assignment wa ON wa.order_id = w.order_id
 LEFT JOIN account a ON a.account_id = wa.account_id
-GROUP BY w.order_id, s.label
+GROUP BY w.order_id, s.label, s.district
 ORDER BY w.created_at DESC;
 
 
@@ -50,6 +51,7 @@ ORDER BY w.created_at DESC;
 SELECT w.order_id,
        w.site_id,
        s.label AS site_label,
+       s.district,
        w.issue_id,
        w.device_id,
        w.order_type,
@@ -86,7 +88,7 @@ JOIN site s ON s.site_id = w.site_id
 LEFT JOIN work_order_assignment wa ON wa.order_id = w.order_id
 LEFT JOIN account a ON a.account_id = wa.account_id
 WHERE w.order_id = $1
-GROUP BY w.order_id, s.label;
+GROUP BY w.order_id, s.label, s.district;
 
 
 -- name: update_work_order_status

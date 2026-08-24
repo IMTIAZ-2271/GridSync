@@ -5,7 +5,6 @@ import {
   ApiError,
   api,
   queryKeys,
-  type AssignableWorker,
   type DispatchableIssue,
   type WorkOrder,
   type WorkOrderType,
@@ -37,9 +36,15 @@ import {
  * of the number is to make that visible before the click rather than three
  * hours after it.
  *
- * Ratings are the sort key supplier requirement 4 asks for. Nothing writes
- * `service_rating` yet, so every worker shows "not yet rated" -- shown as
- * absent rather than as zero stars, because those are different facts.
+ * Ratings are the sort key supplier requirement 4 asks for, and households now
+ * write them from /customer/visits. A technician nobody has rated still reads
+ * "not yet rated" and sorts below the rated rather than above -- absent is not
+ * the same fact as zero.
+ *
+ * The technician list is fetched per order, for that order's district: worker
+ * requirement 4 says a technician only receives requests from their own region,
+ * and the API enforces it with a 409, so a whole-fleet list would offer names
+ * the next click would reject.
  */
 
 /** Which visit a complaint most likely needs. A default, never a decision. */
@@ -68,10 +73,6 @@ export default function SupplierDispatch() {
   const orders = useQuery({
     queryKey: queryKeys.workOrders(),
     queryFn: api.listWorkOrders,
-  });
-  const workers = useQuery({
-    queryKey: queryKeys.assignableWorkers(),
-    queryFn: () => api.assignableWorkers(),
   });
 
   const refreshAll = () =>
@@ -179,7 +180,7 @@ export default function SupplierDispatch() {
             ) : undefined
           }
         />
-        {orders.isPending || workers.isPending ? (
+        {orders.isPending ? (
           <div className="space-y-3 p-5">
             <Skeleton className="h-16 w-full" />
           </div>
@@ -196,7 +197,6 @@ export default function SupplierDispatch() {
               <AssignRow
                 key={order.order_id}
                 order={order}
-                workers={workers.data ?? []}
                 busy={offer.isPending}
                 onOffer={(accountId) =>
                   offer.mutate({ orderId: order.order_id, accountId })
@@ -325,19 +325,25 @@ function IssueRow({
 
 function AssignRow({
   order,
-  workers,
   busy,
   onOffer,
 }: {
   order: WorkOrder;
-  workers: AssignableWorker[];
   busy: boolean;
   onOffer: (accountId: string) => void;
 }) {
   const [who, setWho] = useState("");
-  // The order's own district is not on the row, so the list is not pre-filtered
-  // here -- it is already sorted best-rated then least-loaded, which is the
-  // ordering the requirement asks for.
+
+  // Worker requirement 4: technicians only receive requests from their own
+  // region. The list is fetched FOR the order's district rather than fetched
+  // whole and filtered here -- the API refuses a cross-district offer with a
+  // 409, so showing names it would reject would be offering a button that
+  // cannot work. The server still sorts best-rated then least-loaded.
+  const workers = useQuery({
+    queryKey: queryKeys.assignableWorkers(order.district),
+    queryFn: () => api.assignableWorkers(order.district),
+  });
+
   const lapsed = order.assignments.filter((a) =>
     ["expired", "declined"].includes(a.status),
   );
@@ -350,7 +356,7 @@ function AssignRow({
             {ORDER_TYPE_LABEL[order.order_type]} &middot; {order.site_label}
           </p>
           <p className="mt-0.5 text-xs text-ink-muted">
-            {humanize(order.status)}
+            {order.district} · {humanize(order.status)}
             {order.priority <= 2 && ` · priority ${order.priority}`}
             {lapsed.length > 0 &&
               ` · ${lapsed.length} previous offer${
@@ -367,8 +373,14 @@ function AssignRow({
           onChange={(e) => setWho(e.target.value)}
           className="min-w-[18rem] rounded-lg border border-hairline bg-surface px-2.5 py-1.5 text-sm text-ink"
         >
-          <option value="">Choose a technician…</option>
-          {workers.map((w) => (
+          <option value="">
+            {workers.isPending
+              ? "Loading…"
+              : (workers.data ?? []).length === 0
+                ? `No technician serves ${order.district}`
+                : "Choose a technician…"}
+          </option>
+          {(workers.data ?? []).map((w) => (
             <option key={w.account_id} value={w.account_id}>
               {w.full_name} — {w.service_district} —{" "}
               {w.rating_avg ? `${w.rating_avg}★` : "not yet rated"} —{" "}
@@ -378,7 +390,7 @@ function AssignRow({
         </select>
         <button
           type="button"
-          disabled={busy || !who}
+          disabled={busy || !who || workers.isPending}
           onClick={() => onOffer(who)}
           className="rounded-lg bg-ink px-3.5 py-1.5 text-sm font-medium text-surface disabled:opacity-50"
         >

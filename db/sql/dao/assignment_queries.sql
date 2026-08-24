@@ -21,6 +21,11 @@ SELECT wp.account_id,
        a.full_name,
        wp.approval_status::text AS approval_status,
        wp.availability::text    AS availability,
+       -- Worker requirement 4: a technician only receives requests from their
+       -- own region, so the offer endpoint compares this against the site's
+       -- district and refuses a mismatch. Carried here rather than looked up
+       -- separately, because the gate belongs beside the other three.
+       wp.service_district,
        wp.left_on
 FROM worker_profile wp
 JOIN account a ON a.account_id = wp.account_id

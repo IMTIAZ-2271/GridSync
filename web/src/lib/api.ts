@@ -510,6 +510,8 @@ export interface WorkOrder {
   order_id: string;
   site_id: string;
   site_label: string;
+  /** The site's district. A job may only be offered to a worker who serves it. */
+  district: string;
   issue_id: string | null;
   device_id: string | null;
   order_type: WorkOrderType;
@@ -1102,7 +1104,11 @@ export const api = {
       body: JSON.stringify({ status }),
     }),
 
-  analyticsByArea: () => request<AreaStats[]>("/analytics/by-area"),
+  analyticsByArea: (district?: string) =>
+    request<AreaStats[]>(
+      "/analytics/by-area" +
+        (district ? `?district=${encodeURIComponent(district)}` : ""),
+    ),
 };
 
 // ---------------------------------------------------------------------------
@@ -1136,7 +1142,8 @@ export const queryKeys = {
     ["workers", district ?? "all"] as const,
   pendingAgreements: () => ["agreements", "pending"] as const,
   pendingWorkers: () => ["workers", "pending"] as const,
-  analyticsByArea: () => ["analytics", "by-area"] as const,
+  analyticsByArea: (district?: string) =>
+    ["analytics", "by-area", district ?? "all"] as const,
 };
 
 // ---------------------------------------------------------------------------

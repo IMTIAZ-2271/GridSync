@@ -8,6 +8,14 @@
 -- The per-site totals are computed in a lateral and only then grouped, so a
 -- district's site_count counts sites, not reading rows -- and a site that has
 -- never reported still counts, with zeros.
+--
+-- $1 optionally narrows to one district, which is how government requirement 2
+-- ("monitor consumption within their own region") is served without breaking
+-- requirement 4 ("observe total overall power usage"). Those two are the same
+-- endpoint asking different questions, so the scope is a parameter rather than
+-- a hard filter applied to the role: an official passes their own district for
+-- the first, and passes nothing for the second. Hard-scoping the endpoint to
+-- the caller's district would have satisfied 2 by breaking 4.
 SELECT s.district,
        COUNT(*) AS site_count,
        COUNT(*) FILTER (WHERE t.has_solar) AS solar_site_count,
@@ -29,5 +37,6 @@ CROSS JOIN LATERAL (
     LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
     WHERE d.site_id = s.site_id
 ) t
+WHERE ($1::text IS NULL OR s.district = $1)
 GROUP BY s.district
 ORDER BY s.district;

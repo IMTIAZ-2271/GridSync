@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Bar,
@@ -20,6 +20,7 @@ import {
   type AreaStats,
 } from "../lib/api";
 import { CHART_INK, SERIES } from "../lib/series";
+import { useAuth } from "../auth/AuthContext";
 import {
   Card,
   CardHeader,
@@ -43,12 +44,28 @@ import {
  * that orange is "sent to the grid" must not have to relearn it one portal
  * over. (Slots validated as a pair against this surface: worst CVD dE 24.7,
  * both above 3:1 contrast.)
+ *
+ * Government requirements 2 and 4 are both answered here, and they pull in
+ * opposite directions: "monitor consumption within their own region" and
+ * "observe total overall power usage". Scoping the endpoint to the official's
+ * district by role would have satisfied the first by breaking the second -- and
+ * an official who cannot see the national picture cannot tell whether their own
+ * district is doing well or badly. So the scope is a control on the page, it
+ * defaults to their own district (which is the question they open this page
+ * with), and the whole country is one click away.
  */
 
 export default function GovernmentByArea() {
+  const { account } = useAuth();
+  // Their own district comes from /api/auth/me, which the session already
+  // holds -- no second request to find out who is asking.
+  const home = account?.government_district ?? null;
+  const [scope, setScope] = useState<"mine" | "all">(home ? "mine" : "all");
+  const district = scope === "mine" ? home : null;
+
   const areas = useQuery({
-    queryKey: queryKeys.analyticsByArea(),
-    queryFn: api.analyticsByArea,
+    queryKey: queryKeys.analyticsByArea(district ?? undefined),
+    queryFn: () => api.analyticsByArea(district ?? undefined),
   });
 
   const totals = useMemo(() => {
@@ -68,6 +85,41 @@ export default function GovernmentByArea() {
 
   return (
     <div className="space-y-6">
+      {/* Only an official has a district; a supplier reads this page too and
+          has no "mine" to switch to. */}
+      {home && (
+        <nav
+          className="flex flex-wrap items-center gap-1"
+          aria-label="Reporting area"
+        >
+          {(
+            [
+              { id: "mine" as const, label: home },
+              { id: "all" as const, label: "All districts" },
+            ]
+          ).map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => setScope(o.id)}
+              aria-current={scope === o.id}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                scope === o.id
+                  ? "bg-portal-government text-white"
+                  : "text-ink-2 hover:bg-hairline/60"
+              }`}
+            >
+              {o.label}
+            </button>
+          ))}
+          <span className="ml-2 text-xs text-ink-muted">
+            {scope === "mine"
+              ? "The district your official code was issued for"
+              : "Every district on the grid"}
+          </span>
+        </nav>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {areas.isPending || !totals ? (
           <>
@@ -81,7 +133,11 @@ export default function GovernmentByArea() {
               label="Sites on the grid"
               value={String(totals.sites)}
               unit="sites"
-              footnote={`Across ${areas.data!.length} districts`}
+              footnote={
+                scope === "mine" && home
+                  ? `In ${home}`
+                  : `Across ${areas.data!.length} districts`
+              }
             />
             <Stat
               label="With solar"
