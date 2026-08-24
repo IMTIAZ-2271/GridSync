@@ -6,7 +6,7 @@ import {
   queryKeys,
   type Issue,
   type IssueSeverity,
-  type IssueStatus,
+  type TriageStatus,
 } from "../lib/api";
 import {
   ISSUE_STATUS_TONE,
@@ -58,7 +58,7 @@ export default function WorkerIssues() {
   const queryClient = useQueryClient();
 
   const advance = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: IssueStatus }) =>
+    mutationFn: ({ id, status }: { id: string; status: TriageStatus }) =>
       api.updateIssueStatus(id, { status }),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.issues() }),
@@ -159,7 +159,7 @@ function IssueRow({
 }: {
   issue: Issue;
   busy: boolean;
-  onAdvance: (status: IssueStatus) => void;
+  onAdvance: (status: TriageStatus) => void;
 }) {
   const age = Math.floor(
     (Date.now() - +new Date(issue.reported_at)) / 86_400_000,

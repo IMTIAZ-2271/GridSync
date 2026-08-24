@@ -8,7 +8,12 @@
  * `data_gap` is called. The enum values themselves are the schema's; only the
  * human labels live here.
  */
-import type { IssueCategory, IssueSeverity, IssueStatus } from "./api";
+import type {
+  IssueCategory,
+  IssueSeverity,
+  IssueStatus,
+  TriageStatus,
+} from "./api";
 
 export const CATEGORIES: { value: IssueCategory; label: string }[] = [
   { value: "billing_dispute", label: "Billing dispute" },
@@ -72,7 +77,7 @@ export function humanize(value: string): string {
  */
 export const NEXT_ISSUE_STATUS: Record<
   IssueStatus,
-  { value: IssueStatus; label: string } | null
+  { value: TriageStatus; label: string } | null
 > = {
   open: { value: "acknowledged", label: "Acknowledge" },
   acknowledged: { value: "in_progress", label: "Start work" },

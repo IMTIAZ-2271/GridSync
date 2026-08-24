@@ -24,7 +24,7 @@ from datetime import datetime
 
 import asyncpg
 
-from ..api.notify import notify
+from ..api.notify import notify, notify_site_owner
 from ..api.queries import sql
 
 log = logging.getLogger(__name__)
@@ -58,8 +58,16 @@ async def _expire_one(
     worker_body: str,
     worker_severity: str,
     dispatcher_body: str,
+    household_body: str | None = None,
 ) -> bool:
-    """Expire one assignment and tell the two people it affects.
+    """Expire one assignment and tell the people it affects.
+
+    `household_body` is optional because the two sweeps owe the household
+    different things. Nobody tells a household that a job was *offered*, so an
+    offer lapsing is news about something they never heard had started -- and a
+    panel that reports the dispatcher's internal churn is a panel people learn
+    to ignore. An accepted visit that nobody turned up for is the household's
+    business, and worker requirement 5 says so explicitly.
 
     Returns False when the row moved underneath us -- a worker who accepted, or
     another runner that got there first. Nothing is written and nobody is
@@ -107,6 +115,25 @@ async def _expire_one(
             dedupe_key=f"wo:{row['order_id']}:released:{tag}",
             **entity,
         )
+
+        # Same condition as the dispatcher's, and for a stronger reason: while
+        # a co-assignee still holds the order the visit is still happening, and
+        # telling the household nobody is coming would be false.
+        if household_body is not None:
+            await notify_site_owner(
+                conn,
+                row["site_id"],
+                kind,
+                "Your visit has been delayed",
+                body=household_body.format(
+                    order=_order_label(row["order_type"]),
+                    site=row["site_label"],
+                ),
+                severity="warning",
+                entity_type="work_order",
+                entity_id=str(row["order_id"]),
+                dedupe_key=f"wo:{row['order_id']}:household:{kind}:{tag}",
+            )
     return True
 
 
@@ -166,6 +193,13 @@ async def sweep_overdue_starts(pool: asyncpg.Pool, limit: int) -> dict[str, int]
                 dispatcher_body=(
                     "{worker} accepted the {order} at {site} but never started "
                     "it. It is back in the queue and needs reassigning."
+                ),
+                # Worker requirement 5 names the customer as well as the
+                # supplier. They are the one who has been waiting in.
+                household_body=(
+                    "The {order} booked for {site} was not started in time. "
+                    "It has gone back to the dispatcher to be reassigned, and "
+                    "you will hear again when a technician is booked."
                 ),
             ):
                 expired += 1

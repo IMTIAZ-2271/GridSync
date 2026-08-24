@@ -506,3 +506,68 @@ async def test_every_month_in_the_window_exists_afterwards(conn):
         total = (date.today().year * 12 + date.today().month - 1) + months
         name = f"device_reading_{total // 12:04d}_{total % 12 + 1:02d}"
         assert await conn.fetchval("SELECT to_regclass($1)", name) is not None
+
+
+async def test_the_household_is_told_when_a_visit_is_not_started(conn):
+    """Worker requirement 5 names the customer as well as the supplier.
+
+    They are the party who has been waiting in, so a job that silently goes back
+    into the queue is exactly the thing they need telling about.
+    """
+    dispatcher, worker_id, order_id = await _accepted_but_late(conn, started=False)
+    owner = await conn.fetchval(
+        "SELECT s.account_id FROM site s JOIN work_order w USING (site_id) "
+        "WHERE w.order_id = $1", order_id
+    )
+
+    await sweep_overdue_starts(pool_of(conn), 100)
+
+    notes = await notifications_for(conn, owner, "work_order_start_overdue")
+    assert len(notes) == 1
+    assert notes[0]["severity"] == "warning"
+
+
+async def test_the_household_is_not_told_an_offer_lapsed(conn):
+    """The asymmetry is deliberate, not an oversight.
+
+    Nobody tells a household a job was *offered*, so an offer lapsing is news
+    about something they never heard had started. Supplier requirement 5 asks
+    for the order to be reassigned, not for the household to be told about the
+    dispatcher's churn -- and a panel that reports that is one people learn to
+    ignore.
+    """
+    dispatcher, worker_id, order_id = await _dispatched_offer(
+        conn, expires_in=timedelta(hours=-1)
+    )
+    owner = await conn.fetchval(
+        "SELECT s.account_id FROM site s JOIN work_order w USING (site_id) "
+        "WHERE w.order_id = $1", order_id
+    )
+
+    await sweep_expired_offers(pool_of(conn), 100)
+
+    assert await notifications_for(conn, owner) == []
+
+
+async def test_the_household_is_not_told_while_a_colleague_still_holds_it(conn):
+    """A stronger version of the dispatcher's guard: the visit is still
+    happening, so telling the household nobody is coming would be false."""
+    dispatcher = await make_account(conn)
+    site_id = await make_site(conn)
+    owner = await conn.fetchval(
+        "SELECT account_id FROM site WHERE site_id = $1", site_id
+    )
+    lead = await make_worker(conn)
+    assistant = await make_worker(conn)
+    order_id = await make_work_order(conn, site_id, dispatcher, status="dispatched")
+    await make_assignment(conn, order_id, lead, job_role="lead", status="accepted",
+                          start_deadline_at=datetime.now(DHAKA) + timedelta(hours=20))
+    await make_assignment(conn, order_id, assistant, job_role="assistant",
+                          status="accepted",
+                          start_deadline_at=datetime.now(DHAKA) - timedelta(hours=1))
+
+    await sweep_overdue_starts(pool_of(conn), 100)
+
+    assert await assignment_status(conn, order_id, assistant) == "expired"
+    assert await order_status(conn, order_id) == "dispatched"
+    assert await notifications_for(conn, owner) == []

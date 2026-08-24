@@ -179,8 +179,21 @@ export interface WorkerDecisionBody {
   reason?: string | null;
 }
 
+/**
+ * The statuses a triager can set. Narrower than `IssueStatus` on purpose:
+ * `duplicate` is tied to `duplicate_of_issue_id` by a CHECK, so the API refuses
+ * it and the type refuses it here rather than letting a 409 be the first thing
+ * that notices.
+ */
+export type TriageStatus =
+  | "open"
+  | "acknowledged"
+  | "in_progress"
+  | "resolved"
+  | "closed";
+
 export interface IssueStatusBody {
-  status: "open" | "acknowledged" | "in_progress" | "resolved" | "closed";
+  status: TriageStatus;
   resolution_notes?: string | null;
 }
 
