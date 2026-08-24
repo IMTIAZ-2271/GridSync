@@ -490,3 +490,76 @@ FROM device_reading dr
 JOIN meter_spec ms ON ms.device_id = dr.device_id
 WHERE ms.billing_point_id = $1
   AND ms.billing_role = 'billing';
+
+
+-- name: get_consumption_limit
+-- The household's monthly budget, plus what it has spent against it so far.
+--
+-- Usage is computed here rather than left to the client because it is the same
+-- arithmetic the jobs runner alerts on (sites_over_consumption_limit in
+-- jobs_queries.sql), and two derivations of "how much have I used" that could
+-- disagree is worse than one that is duplicated. Both read month-to-date import
+-- across ALL of the site's billing meters -- rule 3, the limit is the
+-- household's, not the connection's.
+--
+-- Returns a row even when no limit is set (monthly_kwh IS NULL), so the settings
+-- form can show current usage before the household has decided on a figure.
+WITH bounds AS (
+    SELECT date_trunc('month', CURRENT_DATE)::date AS month_start,
+           date_trunc('month', CURRENT_DATE::timestamp)
+               AT TIME ZONE 'Asia/Dhaka' AS window_from,
+           (date_trunc('month', CURRENT_DATE::timestamp) + INTERVAL '1 month')
+               AT TIME ZONE 'Asia/Dhaka' AS window_to,
+           EXTRACT(day FROM date_trunc('month', CURRENT_DATE::timestamp)
+                            + INTERVAL '1 month - 1 day')::numeric AS days_in_month
+),
+used AS (
+    SELECT round(sum(dr.import_kwh), 4)::numeric(12,4) AS used_kwh
+    FROM meter_spec ms
+    JOIN billing_point bp ON bp.point_id = ms.billing_point_id
+    JOIN device d         ON d.device_id = ms.device_id
+    JOIN device_reading dr ON dr.device_id = d.device_id
+    CROSS JOIN bounds b
+    WHERE bp.site_id = $1
+      AND ms.billing_role = 'billing'
+      AND d.removed_at IS NULL
+      AND dr.interval_start >= b.window_from
+      AND dr.interval_start <  b.window_to
+)
+SELECT b.month_start,
+       scl.monthly_kwh,
+       scl.notify_at_pct,
+       scl.updated_at,
+       coalesce(u.used_kwh, 0)::numeric(12,4) AS used_kwh,
+       CASE WHEN scl.monthly_kwh IS NULL THEN NULL
+            ELSE round(scl.monthly_kwh / b.days_in_month, 4)
+       END AS daily_allowance_kwh
+FROM bounds b
+LEFT JOIN site_consumption_limit scl ON scl.site_id = $1
+LEFT JOIN used u ON true;
+
+
+-- name: set_consumption_limit
+-- Upsert, because a household has one budget and setting a new one replaces it.
+--
+-- Deliberately NOT append-only. Rule 1 covers money -- bills, rates, the credit
+-- ledger -- because a bill has to stay correct forever. A consumption limit is a
+-- preference: it says what to warn me about from now on, nothing was ever
+-- charged against it, and keeping a version history of somebody changing a
+-- number in a settings box would be storage without a reader.
+INSERT INTO site_consumption_limit (site_id, monthly_kwh, notify_at_pct,
+                                    set_by_account_id, updated_at)
+VALUES ($1, $2, $3, $4, now())
+ON CONFLICT (site_id) DO UPDATE
+SET monthly_kwh       = EXCLUDED.monthly_kwh,
+    notify_at_pct     = EXCLUDED.notify_at_pct,
+    set_by_account_id = EXCLUDED.set_by_account_id,
+    updated_at        = now()
+RETURNING site_id;
+
+
+-- name: clear_consumption_limit
+-- Turning the warning off is deleting the row, not setting the limit absurdly
+-- high: the sweep's WHERE clause is what decides who gets told, and a household
+-- with no row is simply not considered.
+DELETE FROM site_consumption_limit WHERE site_id = $1 RETURNING site_id;

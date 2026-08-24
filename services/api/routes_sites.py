@@ -872,3 +872,125 @@ async def bill_site(
         )
 
     return results
+
+
+# --------------------------------------------------------------------------
+# Consumption limit -- consumer requirement 5, settings half
+#
+# The jobs runner has read `site_consumption_limit` every morning since the
+# runner landed; this is what finally lets a household write one. The alert
+# itself lives in services/jobs/consumption.py.
+#
+# Consumer-only, deliberately. A regulator or an installer looking at somebody
+# else's site has no business setting the warning threshold on their electricity
+# bill, and the alert is delivered to the site owner regardless of who set it --
+# so an endpoint any role could call would let a stranger make a household's
+# phone buzz.
+# --------------------------------------------------------------------------
+
+class ConsumptionLimit(BaseModel):
+    """The budget, and what has been spent against it this month.
+
+    `used_kwh` is served alongside the limit rather than left to the client to
+    assemble from the readings endpoint: it is the same month-to-date arithmetic
+    the jobs sweep alerts on, and two derivations of "how much have I used" that
+    could disagree is worse than one repeated in a single SQL file.
+    """
+
+    site_id: UUID
+    month_start: date
+    used_kwh: Energy
+    monthly_kwh: Energy | None
+    notify_at_pct: Rate | None
+    daily_allowance_kwh: Energy | None
+    updated_at: datetime | None
+
+
+class ConsumptionLimitUpdate(BaseModel):
+    # 1 kWh is a nonsense budget and 100000 is a small factory. Bounded here
+    # rather than only by the CHECK so the caller gets a 422 naming the field
+    # instead of a 500 from a constraint violation.
+    monthly_kwh: Decimal = Field(gt=0, le=100000)
+    # Matches limit_notify_pct on the table.
+    notify_at_pct: Decimal = Field(default=Decimal("80.00"), ge=1, le=100)
+
+
+def _limit(site_id: UUID, row: asyncpg.Record) -> ConsumptionLimit:
+    return ConsumptionLimit(
+        site_id=site_id,
+        month_start=row["month_start"],
+        used_kwh=row["used_kwh"],
+        monthly_kwh=row["monthly_kwh"],
+        notify_at_pct=row["notify_at_pct"],
+        daily_allowance_kwh=row["daily_allowance_kwh"],
+        updated_at=row["updated_at"],
+    )
+
+
+@router.get(
+    "/api/sites/{site_id}/consumption-limit",
+    response_model=ConsumptionLimit,
+)
+async def get_consumption_limit(
+    conn: Conn,
+    site_id: UUID,
+    principal: Annotated[Principal, Depends(require_role("consumer"))],
+) -> ConsumptionLimit:
+    """The site's limit, or the same shape with nulls if none is set.
+
+    200-with-nulls rather than 404: "this household has not set a budget" is a
+    normal state of a real site, not a missing resource, and the usage figure is
+    worth showing before they pick a number.
+    """
+    await visible_site_or_404(conn, principal, site_id)
+    row = await conn.fetchrow(sql("get_consumption_limit"), site_id)
+    return _limit(site_id, row)
+
+
+@router.put(
+    "/api/sites/{site_id}/consumption-limit",
+    response_model=ConsumptionLimit,
+)
+async def set_consumption_limit(
+    conn: Conn,
+    site_id: UUID,
+    payload: ConsumptionLimitUpdate,
+    principal: Annotated[Principal, Depends(require_role("consumer"))],
+) -> ConsumptionLimit:
+    """Set or replace the monthly limit.
+
+    PUT, not POST: there is exactly one limit per site and setting it again
+    replaces it, so the call is idempotent and the URL names the thing.
+
+    This is one of the few rows in the schema that is deliberately mutable. Rule
+    1 makes money immutable because a bill must stay correct forever; a limit is
+    a preference about future warnings, nothing was charged against it, and a
+    version history of somebody adjusting a number in a settings box would be
+    storage with no reader.
+    """
+    await visible_site_or_404(conn, principal, site_id)
+    async with conn.transaction():
+        await conn.fetchval(
+            sql("set_consumption_limit"), site_id,
+            payload.monthly_kwh, payload.notify_at_pct, principal.account_id,
+        )
+        row = await conn.fetchrow(sql("get_consumption_limit"), site_id)
+    return _limit(site_id, row)
+
+
+@router.delete("/api/sites/{site_id}/consumption-limit", status_code=204)
+async def clear_consumption_limit(
+    conn: Conn,
+    site_id: UUID,
+    principal: Annotated[Principal, Depends(require_role("consumer"))],
+) -> None:
+    """Turn the warning off.
+
+    Deleting the row, not setting the limit absurdly high: the sweep's WHERE
+    clause is what decides who gets told, and a household with no row is simply
+    not considered. Answers 204 whether or not a row was there -- DELETE is
+    idempotent, and reporting "there was nothing to delete" as a 404 would make
+    a second click look like a failure.
+    """
+    await visible_site_or_404(conn, principal, site_id)
+    await conn.execute(sql("clear_consumption_limit"), site_id)

@@ -161,4 +161,55 @@ WHERE w.account_id = (
     SELECT account_id FROM worker_profile ORDER BY employee_code LIMIT 1
 );
 
+-- ---------------------------------------------------------------------------
+-- Give every 'government' account a government_profile.
+--
+-- The demo accounts predate migration e7c4b19a2d83: `gov@demo.com` was created
+-- when 'government' was a bare account_role with nothing behind it, so it has
+-- no profile and therefore governs no district. That was invisible while the
+-- regulator only read fleet-wide aggregates, and stopped being invisible the
+-- moment an endpoint scoped itself to the official's own district -- the worker
+-- approval queue answers 403 to an official with no district, which is correct
+-- and which made the demo account unusable on that page.
+--
+-- Claims the lowest unclaimed code, exactly as POST /api/auth/register/government
+-- does, so the profile a demo account ends up with is the same shape a real
+-- registration produces. Ordered by code so re-running picks the same district.
+--
+-- Idempotent: accounts that already have a profile are skipped by the NOT
+-- EXISTS, and the code is marked claimed in the same statement's wake so a
+-- second account cannot take it.
+-- ---------------------------------------------------------------------------
+WITH needy AS (
+    SELECT a.account_id,
+           row_number() OVER (ORDER BY a.created_at, a.email) AS rn
+    FROM account a
+    WHERE a.role = 'government'
+      AND NOT EXISTS (
+          SELECT 1 FROM government_profile gp WHERE gp.account_id = a.account_id
+      )
+),
+free AS (
+    SELECT c.code, c.district,
+           row_number() OVER (ORDER BY c.code) AS rn
+    FROM government_official_code c
+    WHERE c.claimed_by_account_id IS NULL
+),
+paired AS (
+    SELECT n.account_id, f.code, f.district
+    FROM needy n JOIN free f ON f.rn = n.rn
+),
+claimed AS (
+    UPDATE government_official_code c
+    SET claimed_by_account_id = p.account_id,
+        claimed_at = now()
+    FROM paired p
+    WHERE c.code = p.code
+    RETURNING c.code
+)
+INSERT INTO government_profile (account_id, district, official_code)
+SELECT p.account_id, p.district, p.code
+FROM paired p
+WHERE EXISTS (SELECT 1 FROM claimed WHERE claimed.code = p.code);
+
 COMMIT;

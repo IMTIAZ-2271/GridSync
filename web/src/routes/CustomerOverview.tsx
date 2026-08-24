@@ -13,6 +13,7 @@ import { SERIES, type SeriesId } from "../lib/series";
 import { useSelectedSite } from "../components/SitePicker";
 import ReadingsChart from "../components/ReadingsChart";
 import CustomerOnboarding from "./CustomerOnboarding";
+import ConsumptionLimitCard from "../components/ConsumptionLimitCard";
 import {
   Card,
   CardHeader,
@@ -115,6 +116,10 @@ export default function CustomerOverview() {
           )}
         </div>
       </Card>
+
+      {/* Below the chart on purpose: the limit is a setting, and the seven-day
+          series is what someone opens this page to see. */}
+      {siteId && <ConsumptionLimitCard siteId={siteId} />}
     </div>
   );
 }

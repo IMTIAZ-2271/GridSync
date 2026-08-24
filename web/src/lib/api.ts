@@ -123,6 +123,67 @@ export interface SiteSummary {
   latest_bill: LatestBill | null;
 }
 
+/**
+ * A household's monthly consumption budget, and what it has spent against it.
+ *
+ * `monthly_kwh` is null when no limit is set -- a normal state, not a missing
+ * resource, which is why the endpoint answers 200 with nulls rather than 404.
+ * `used_kwh` is always present so the settings form can show current usage
+ * before the household has picked a figure, and it is the same month-to-date
+ * arithmetic the jobs runner alerts on.
+ */
+export interface ConsumptionLimit {
+  site_id: string;
+  month_start: string;
+  used_kwh: Decimal;
+  monthly_kwh: Decimal | null;
+  notify_at_pct: Decimal | null;
+  daily_allowance_kwh: Decimal | null;
+  updated_at: Timestamp | null;
+}
+
+export interface ConsumptionLimitBody {
+  monthly_kwh: string;
+  notify_at_pct: string;
+}
+
+/**
+ * A worker registration awaiting a government official's decision.
+ *
+ * Only government workers reach this queue -- a private installer's staff are
+ * approved at registration. Until one is approved they cannot be offered a work
+ * order at all (`offerable_worker` refuses a pending profile), so this is a
+ * blocking queue, not a formality.
+ */
+export interface PendingWorker {
+  account_id: string;
+  full_name: string;
+  email: string;
+  national_id: string | null;
+  employee_code: string;
+  service_district: string;
+  worker_kind: string;
+  availability: string;
+  max_daily_jobs: number;
+  hired_on: string;
+  approval_status: string;
+  rejection_reason: string | null;
+  approved_at: Timestamp | null;
+  distribution_company_id: string | null;
+  distribution_company_name: string | null;
+  registered_at: Timestamp;
+}
+
+export interface WorkerDecisionBody {
+  decision: "approve" | "reject";
+  reason?: string | null;
+}
+
+export interface IssueStatusBody {
+  status: "open" | "acknowledged" | "in_progress" | "resolved" | "closed";
+  resolution_notes?: string | null;
+}
+
 export interface Reading {
   interval_start: Timestamp;
   import_kwh: Decimal;
@@ -820,6 +881,32 @@ export const api = {
   siteReadings: (siteId: string, days = 7) =>
     request<Reading[]>(`/sites/${siteId}/readings?days=${days}`),
 
+  consumptionLimit: (siteId: string) =>
+    request<ConsumptionLimit>(`/sites/${siteId}/consumption-limit`),
+
+  setConsumptionLimit: (siteId: string, body: ConsumptionLimitBody) =>
+    request<ConsumptionLimit>(`/sites/${siteId}/consumption-limit`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  clearConsumptionLimit: (siteId: string) =>
+    request<void>(`/sites/${siteId}/consumption-limit`, { method: "DELETE" }),
+
+  pendingWorkers: () => request<PendingWorker[]>("/workers/pending"),
+
+  decideWorker: (accountId: string, body: WorkerDecisionBody) =>
+    request<PendingWorker>(`/workers/${accountId}/approval`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  updateIssueStatus: (issueId: string, body: IssueStatusBody) =>
+    request<Issue>(`/issues/${issueId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
   siteBills: (siteId: string) => request<Bill[]>(`/sites/${siteId}/bills`),
 
   siteDevices: (siteId: string) =>
@@ -872,10 +959,13 @@ export const queryKeys = {
   siteBills: (id: string) => ["sites", id, "bills"] as const,
   siteDevices: (id: string) => ["sites", id, "devices"] as const,
   sitePoints: (id: string) => ["sites", id, "points"] as const,
+  consumptionLimit: (id: string) =>
+    ["sites", id, "consumption-limit"] as const,
   fleetDevices: () => ["devices"] as const,
   issues: () => ["issues"] as const,
   workOrders: () => ["work-orders"] as const,
   pendingAgreements: () => ["agreements", "pending"] as const,
+  pendingWorkers: () => ["workers", "pending"] as const,
   analyticsByArea: () => ["analytics", "by-area"] as const,
 };
 

@@ -1,9 +1,16 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api, queryKeys, type Issue, type IssueSeverity } from "../lib/api";
+import {
+  api,
+  queryKeys,
+  type Issue,
+  type IssueSeverity,
+  type IssueStatus,
+} from "../lib/api";
 import {
   ISSUE_STATUS_TONE,
+  NEXT_ISSUE_STATUS,
   SEVERITY_TONE,
   categoryLabel,
   humanize,
@@ -25,9 +32,15 @@ import {
  * visibility, only for attention. That distinction matters: a filter that is
  * doing security work has no business living in the client.
  *
- * Read-only. There is no endpoint to advance an issue's own status yet (see
- * the note at the foot of the page); a worker changes the world through the
- * work order, and the issue follows.
+ * Triage is one click. `PATCH /api/issues/{id}/status` accepts any status from
+ * any other -- deliberately, because triage gets things wrong and walking a
+ * status back must be possible -- so the single button offered per row is
+ * convenience, not enforcement, the same posture as the work-order queue and
+ * `RequireAuth`.
+ *
+ * The mutation invalidates rather than patching the cache: acknowledged_at,
+ * resolved_at and closed_at are maintained server-side and set once, and the
+ * client must not guess at them.
  */
 
 const SEVERITY_RANK: Record<IssueSeverity, number> = {
@@ -42,6 +55,14 @@ const SETTLED = new Set(["resolved", "closed", "duplicate"]);
 
 export default function WorkerIssues() {
   const [openOnly, setOpenOnly] = useState(true);
+  const queryClient = useQueryClient();
+
+  const advance = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: IssueStatus }) =>
+      api.updateIssueStatus(id, { status }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues() }),
+  });
 
   const issues = useQuery({
     queryKey: queryKeys.issues(),
@@ -105,23 +126,45 @@ export default function WorkerIssues() {
       ) : (
         <ul className="divide-y divide-hairline">
           {shown.map((issue) => (
-            <IssueRow key={issue.issue_id} issue={issue} />
+            <IssueRow
+              key={issue.issue_id}
+              issue={issue}
+              busy={advance.isPending && advance.variables?.id === issue.issue_id}
+              onAdvance={(status) =>
+                advance.mutate({ id: issue.issue_id, status })
+              }
+            />
           ))}
         </ul>
       )}
 
+      {advance.error && (
+        <p className="border-t border-hairline px-5 py-3 text-sm text-status-critical">
+          {advance.error.message}
+        </p>
+      )}
+
       <p className="border-t border-hairline px-5 py-3 text-xs text-ink-muted">
-        Issues are read-only here. Work is tracked on the order raised against
-        the issue, on the Work orders tab.
+        Advancing an issue records who asked and when. The physical work is
+        still tracked on the order raised against it, on the Work orders tab.
       </p>
     </Card>
   );
 }
 
-function IssueRow({ issue }: { issue: Issue }) {
+function IssueRow({
+  issue,
+  busy,
+  onAdvance,
+}: {
+  issue: Issue;
+  busy: boolean;
+  onAdvance: (status: IssueStatus) => void;
+}) {
   const age = Math.floor(
     (Date.now() - +new Date(issue.reported_at)) / 86_400_000,
   );
+  const next = NEXT_ISSUE_STATUS[issue.status];
 
   return (
     <li className="px-5 py-4">
@@ -148,6 +191,19 @@ function IssueRow({ issue }: { issue: Issue }) {
 
       {issue.description && (
         <p className="mt-2 text-sm text-ink-2">{issue.description}</p>
+      )}
+
+      {next && (
+        <div className="mt-3">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onAdvance(next.value)}
+            className="rounded-lg border border-hairline px-3 py-1.5 text-sm font-medium text-ink-2 disabled:opacity-50"
+          >
+            {busy ? "Saving…" : next.label}
+          </button>
+        </div>
       )}
     </li>
   );

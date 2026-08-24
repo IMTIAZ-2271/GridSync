@@ -14,6 +14,7 @@ import WorkerOrders from "./routes/WorkerOrders";
 import WorkerIssues from "./routes/WorkerIssues";
 import GovernmentByArea from "./routes/GovernmentByArea";
 import GovernmentAgreements from "./routes/GovernmentAgreements";
+import GovernmentWorkers from "./routes/GovernmentWorkers";
 import SupplierSites from "./routes/SupplierSites";
 import SupplierEquipment from "./routes/SupplierEquipment";
 
@@ -57,6 +58,7 @@ export default function App() {
           <Route path="government">
             <Route index element={<GovernmentByArea />} />
             <Route path="agreements" element={<GovernmentAgreements />} />
+            <Route path="workers" element={<GovernmentWorkers />} />
           </Route>
 
           <Route path="supplier">

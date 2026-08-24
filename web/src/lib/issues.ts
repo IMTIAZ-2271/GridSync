@@ -56,3 +56,28 @@ export function categoryLabel(category: IssueCategory | string): string {
 export function humanize(value: string): string {
   return value.replace(/_/g, " ");
 }
+
+/**
+ * The move a triager is offered next, per status.
+ *
+ * Convenience, not enforcement -- `PATCH /api/issues/{id}/status` accepts any
+ * of the five from any other, deliberately, because triage gets things wrong
+ * and walking a status back must be possible. Offering one obvious next step
+ * keeps the common path to a single click without pretending the server has a
+ * state machine it does not have. Same posture as `web/src/lib/workOrders.ts`.
+ *
+ * `closed` and `duplicate` offer nothing: a closed issue is finished, and a
+ * duplicate's status follows the issue it was merged into (the API refuses it
+ * with a 409).
+ */
+export const NEXT_ISSUE_STATUS: Record<
+  IssueStatus,
+  { value: IssueStatus; label: string } | null
+> = {
+  open: { value: "acknowledged", label: "Acknowledge" },
+  acknowledged: { value: "in_progress", label: "Start work" },
+  in_progress: { value: "resolved", label: "Mark resolved" },
+  resolved: { value: "closed", label: "Close" },
+  closed: null,
+  duplicate: null,
+};

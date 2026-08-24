@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .auth import CurrentAccount, visible_site_or_404
+from .notify import notify
 from .db import Conn
 from .queries import sql
 
@@ -117,3 +118,131 @@ async def create_issue(
 
     row = await conn.fetchrow(sql("get_issue"), issue_id)
     return Issue(**dict(row))
+
+
+# The states a triager can put an issue in. 'duplicate' is absent: the CHECK
+# `issue_duplicate_status` ties it to duplicate_of_issue_id, so offering it here
+# without the id would be a 500 wearing a dropdown. Merging duplicates needs the
+# pair and therefore its own endpoint.
+IssueStatusValue = Literal[
+    "open", "acknowledged", "in_progress", "resolved", "closed",
+]
+
+
+class IssueStatusUpdate(BaseModel):
+    status: IssueStatusValue
+    # Written only when supplied, so re-entering a state cannot blank a note
+    # somebody already left. See the statement.
+    resolution_notes: str | None = Field(default=None, max_length=2000)
+
+
+@router.patch("/api/issues/{issue_id}/status", response_model=Issue)
+async def update_issue_status(
+    conn: Conn,
+    issue_id: UUID,
+    payload: IssueStatusUpdate,
+    principal: CurrentAccount,
+) -> Issue:
+    """Advance an issue through its own lifecycle.
+
+    Until this existed the worker triage queue was read-only and an issue's
+    status was whatever it was filed as, forever -- a household could watch a
+    technician complete a work order while the fault they reported still read
+    'open'.
+
+    **Not the consumer's to move.** They file and they will confirm (that is
+    `issue.consumer_confirmed_at`, still unwired); calling their own fault
+    resolved is not a thing to give them, and neither is reopening it by
+    editing a status rather than saying why. `visible_site_or_404` alone would
+    have let them, since they can obviously see their own site -- so the role
+    check is explicit and separate from the row check.
+
+    **No state machine, deliberately** -- the same posture as
+    `PATCH /api/work-orders/{id}/status`. Any of the five is accepted from any
+    other, because triage gets things wrong and walking a status back has to be
+    possible without a migration. The timestamps are set once by the SQL and
+    never rewritten, so the history survives the correction. The client offers
+    the sensible next move; that is convenience, not enforcement.
+    """
+    if principal.role not in ("worker", "supplier", "admin"):
+        raise HTTPException(
+            status_code=403, detail="this role cannot triage issues"
+        )
+
+    async with conn.transaction():
+        before = await conn.fetchrow(sql("get_issue"), issue_id)
+        if before is None:
+            raise HTTPException(status_code=404, detail="issue not found")
+        # Scoped after the existence check but before the write: a worker may
+        # only touch issues on sites they cover, and `issues_for_worker` is the
+        # same predicate their queue is built from.
+        await visible_site_or_404(conn, principal, before["site_id"])
+
+        updated = await conn.fetchval(
+            sql("update_issue_status"),
+            issue_id,
+            payload.status,
+            (payload.resolution_notes or "").strip() or None,
+        )
+        if updated is None:
+            # The row exists and is visible, so the only way to get here is the
+            # statement's `status <> 'duplicate'` guard.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "this issue is marked a duplicate; its status follows the "
+                    "issue it was merged into"
+                ),
+            )
+
+        row = await conn.fetchrow(sql("get_issue"), issue_id)
+
+        # Inside the transaction, so a rolled-back status change cannot leave a
+        # notification claiming it happened.
+        await _notify_reporter(conn, row, payload.status)
+    return Issue(**dict(row))
+
+
+# Which moves the household hears about. 'acknowledged' and 'in_progress' are
+# not here: a status crawling through triage is the queue's business, and a
+# panel that buzzes for each step teaches people to ignore the panel -- the same
+# reasoning that keeps 'dispatched' off the work-order notifications.
+_REPORTER_UPDATES: dict[str, tuple[str, str]] = {
+    "resolved": (
+        "info",
+        "The issue you reported at {site} has been marked resolved.",
+    ),
+    "closed": (
+        "info",
+        "The issue you reported at {site} has been closed.",
+    ),
+}
+
+
+async def _notify_reporter(
+    conn: asyncpg.Connection, issue: asyncpg.Record, status: str
+) -> None:
+    """Tell whoever filed it -- not whoever owns the site.
+
+    Those are usually the same account and sometimes are not: a worker can file
+    an issue against a household's site, and the person who wants to know it was
+    resolved is the one who raised it.
+    """
+    update = _REPORTER_UPDATES.get(status)
+    if update is None:
+        return
+    severity, body = update
+    await notify(
+        conn,
+        issue["reported_by_account_id"],
+        "issue_updated",
+        f"{issue['title'][:80]} — {status}",
+        body=body.format(site=issue["site_label"]),
+        severity=severity,
+        entity_type="issue",
+        entity_id=str(issue["issue_id"]),
+        # Keyed on the state, not the moment: with no state machine a triager
+        # can walk an issue back into a state it already held, and the reporter
+        # must not be told twice that the same thing happened.
+        dedupe_key=f"issue:{issue['issue_id']}:{status}",
+    )

@@ -49,6 +49,7 @@ from .routes_issues import router as issues_router
 from .routes_notifications import router as notifications_router
 from .routes_sites import router as sites_router
 from .routes_work_orders import router as work_orders_router
+from .routes_workers import router as workers_router
 
 # --------------------------------------------------------------------------
 # Pool
@@ -95,5 +96,6 @@ app.include_router(devices_router)
 app.include_router(issues_router)
 app.include_router(notifications_router)
 app.include_router(work_orders_router)
+app.include_router(workers_router)
 app.include_router(agreements_router)
 app.include_router(analytics_router)
