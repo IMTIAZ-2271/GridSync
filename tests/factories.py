@@ -180,12 +180,18 @@ async def make_meter(conn: asyncpg.Connection, site_id: str,
         point_id = await site_main_point(conn, site_id)
     device_id = await conn.fetchval(
         """
-        INSERT INTO device (site_id, device_type, serial_no, device_key_hash)
-        VALUES ($1, 'meter', $2, 'not-a-real-hash')
+        INSERT INTO device (site_id, device_type, serial_no, device_key_hash,
+                            interval_minutes)
+        VALUES ($1, 'meter', $2, 'not-a-real-hash', $3)
         RETURNING device_id
         """,
         site_id,
         overrides.pop("serial_no", f"TEST-METER-{tag}"),
+        # Declared interval, not just a column default: site_monthly_summary's
+        # peak_demand_kw converts one interval's kWh into kW with it, so a test
+        # writing hourly readings onto a 30-minute device would double the
+        # answer and look like a rollup bug.
+        overrides.pop("interval_minutes", 30),
     )
     await conn.execute(
         """
@@ -268,3 +274,88 @@ async def make_inverter(conn: asyncpg.Connection, site_id: str,
         overrides.pop("dc_capacity_kw", Decimal("6.000")),
     )
     return device_id
+
+
+async def make_worker(conn: asyncpg.Connection, **overrides) -> str:
+    """An approved private worker. Approval matters: `offerable_worker` refuses
+    to offer a job to a profile that is still 'pending', and worker_profile's
+    default is 'pending'."""
+    tag = overrides.pop("tag", unique_suffix())
+    account_id = overrides.pop("account_id", None) or await make_account(conn, tag=tag)
+    await conn.execute(
+        """
+        INSERT INTO worker_profile (
+            account_id, employee_code, service_district, hired_on,
+            worker_kind, approval_status, approved_at, availability
+        )
+        VALUES ($1, $2, 'Dhanmondi', DATE '2026-01-01',
+                $3::worker_kind, $4::approval_status,
+                -- worker_approval_timestamps: approved_at is set exactly when
+                -- the status is not 'pending'.
+                CASE WHEN $4 = 'pending' THEN NULL ELSE now() END,
+                $5::worker_availability)
+        """,
+        account_id,
+        overrides.pop("employee_code", f"TEST-EMP-{tag}"),
+        overrides.pop("worker_kind", "private"),
+        overrides.pop("approval_status", "approved"),
+        overrides.pop("availability", "available"),
+    )
+    return account_id
+
+
+async def make_work_order(conn: asyncpg.Connection, site_id: str,
+                          created_by: str = None, **overrides) -> str:
+    if created_by is None:
+        created_by = await make_account(conn)
+    return await conn.fetchval(
+        """
+        INSERT INTO work_order (site_id, created_by_account_id, order_type,
+                                status, started_at)
+        VALUES ($1, $2, $3::work_order_type, $4::work_order_status, $5)
+        RETURNING order_id
+        """,
+        site_id,
+        created_by,
+        overrides.pop("order_type", "meter_swap"),
+        overrides.pop("status", "dispatched"),
+        overrides.pop("started_at", None),
+    )
+
+
+async def make_assignment(conn: asyncpg.Connection, order_id: str,
+                          account_id: str, **overrides) -> None:
+    """One assignment with its deadlines set explicitly.
+
+    Deadlines are passed in rather than computed from a TTL: these tests are
+    about what a sweep does with a deadline that has already passed, and the
+    only honest way to write that is to store one in the past.
+    """
+    await conn.execute(
+        """
+        INSERT INTO work_order_assignment (
+            order_id, account_id, job_role, status,
+            offer_expires_at, start_deadline_at
+        )
+        VALUES ($1, $2, $3::assignment_role, $4::assignment_status, $5, $6)
+        """,
+        order_id, account_id,
+        overrides.pop("job_role", "lead"),
+        overrides.pop("status", "offered"),
+        overrides.pop("offer_expires_at", None),
+        overrides.pop("start_deadline_at", None),
+    )
+
+
+async def set_consumption_limit(conn: asyncpg.Connection, site_id: str,
+                                monthly_kwh, notify_at_pct=None) -> None:
+    await conn.execute(
+        """
+        INSERT INTO site_consumption_limit (site_id, monthly_kwh, notify_at_pct)
+        VALUES ($1, $2, COALESCE($3, 80.00))
+        ON CONFLICT (site_id) DO UPDATE
+        SET monthly_kwh = EXCLUDED.monthly_kwh,
+            notify_at_pct = EXCLUDED.notify_at_pct
+        """,
+        site_id, monthly_kwh, notify_at_pct,
+    )

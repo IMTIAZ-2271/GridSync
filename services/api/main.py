@@ -33,14 +33,12 @@ number a customer is being asked to pay.
 """
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-import asyncpg
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from .db import create_pool
 
 from .routes_agreements import router as agreements_router
 from .routes_analytics import router as analytics_router
@@ -52,52 +50,18 @@ from .routes_notifications import router as notifications_router
 from .routes_sites import router as sites_router
 from .routes_work_orders import router as work_orders_router
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
 # --------------------------------------------------------------------------
 # Pool
+#
+# The DSN and the per-connection session setup live in db.py, not here:
+# services/jobs opens its own pool from the same two functions and must not
+# import this module to reach them.
 # --------------------------------------------------------------------------
-
-def database_url() -> str:
-    """The DSN asyncpg wants.
-
-    load_dotenv gets an explicit path: called bare it resolves against the
-    *calling* file and quietly picks up the wrong .env when the app is started
-    from another directory. tests/conftest.py and db/migrations/env.py do the
-    same thing.
-    """
-    load_dotenv(PROJECT_ROOT / ".env")
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL is not set; copy .env.example to .env")
-    # Alembic's URL carries SQLAlchemy's dialect suffix; asyncpg wants it bare.
-    return url.replace("postgresql+asyncpg://", "postgresql://", 1)
-
-
-async def _init_connection(conn: asyncpg.Connection) -> None:
-    """Pin the session TimeZone for every pooled connection.
-
-    Nothing in db/sql/dao/ depends on this today: the queries compare against
-    `now()`, which is an absolute instant, and every timestamptz is serialized
-    to UTC on the way out. It is here so that the day someone adds a
-    date_trunc, a ::date cast or a bare timestamptz literal to one of those
-    files -- all of which resolve against the *session* zone -- they resolve
-    against a zone this project named on purpose rather than whatever the
-    server was configured with. That is the same discipline CLAUDE.md
-    requires of DDL. Asia/Dhaka matches `site.timezone`.
-    """
-    await conn.execute("SET TIME ZONE 'Asia/Dhaka'")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.pool = await asyncpg.create_pool(
-        database_url(),
-        min_size=1,
-        max_size=10,
-        init=_init_connection,
-    )
+    app.state.pool = await create_pool()
     try:
         yield
     finally:

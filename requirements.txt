@@ -8,6 +8,7 @@ pydantic-settings
 python-dotenv
 pytest
 pytest-asyncio
+apscheduler
 argon2-cffi
 pyjwt
 email-validator

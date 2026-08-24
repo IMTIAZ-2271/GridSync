@@ -25,6 +25,7 @@ from .auth import (
     require_role,
     visible_site_or_404,
 )
+from .billing import next_month, run_billing_with_retry
 from .db import Conn
 from .orgs import resolve_district
 from .queries import sql
@@ -260,30 +261,6 @@ BACKFILL_DAYS = 90
 # foreign key on five tables now, and a canonical list maintained in a handler
 # was exactly how `Dhaka`, `dhaka` and `g` became three rows in the
 # regulator's rollup.
-
-
-def _next_month(d: date) -> date:
-    return date(d.year + (d.month == 12), (d.month % 12) + 1, 1)
-
-
-async def _run_billing_with_retry(
-    conn: asyncpg.Connection, point_id: UUID, period_start: date, attempts: int = 3
-) -> UUID:
-    """run_billing under REPEATABLE READ, retried on serialization failure --
-    the isolation and retry contract CLAUDE.md requires of every caller.
-
-    The unit is a billing point, not a site: a household with two connections
-    gets two independent bills for the same month.
-    """
-    for attempt in range(attempts):
-        try:
-            async with conn.transaction(isolation="repeatable_read"):
-                return await conn.fetchval(
-                    "SELECT run_billing($1, $2)", point_id, period_start
-                )
-        except asyncpg.SerializationError:
-            if attempt == attempts - 1:
-                raise
 
 
 async def _points_on(conn: asyncpg.Connection, site_id: UUID) -> list[asyncpg.Record]:
@@ -871,7 +848,7 @@ async def bill_site(
 
         while month <= last_month:
             try:
-                bill_id = await _run_billing_with_retry(conn, point_id, month)
+                bill_id = await run_billing_with_retry(conn, point_id, month)
                 results.append(
                     BillingRunResult(
                         billing_point_id=point_id, point_label=point["label"],
@@ -887,7 +864,7 @@ async def bill_site(
                         reason=str(exc),
                     )
                 )
-            month = _next_month(month)
+            month = next_month(month)
 
     if not results:
         raise HTTPException(

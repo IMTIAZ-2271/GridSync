@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from .auth import Principal, require_role
 from .db import Conn
-from .notify import notify_site_owner
+from .notify import notify, notify_site_owner
 from .queries import sql
 
 router = APIRouter(tags=["operations"])
@@ -178,3 +178,207 @@ async def _notify_household(
         entity_id=str(order["order_id"]),
         dedupe_key=f"wo:{order['order_id']}:{status}",
     )
+
+
+# --------------------------------------------------------------------------
+# Assignments: offering a job, and answering the offer
+#
+# The two deadlines in the schema get their values here and nowhere else.
+# CLAUDE.md decision 3 says a deadline is STORED so a query between two sweeps
+# is already correct -- which means the durations belong on the write path, not
+# in the jobs runner's configuration. If they lived in the runner, editing an
+# environment variable would retroactively change when an offer made yesterday
+# expires, and every query that reads offer_expires_at would start lying.
+#
+# Three hours to answer an offer (supplier requirement 5); one day from
+# accepting to actually starting (worker requirement 5). services/jobs sweeps
+# both -- see services/jobs/deadlines.py for what happens when they pass.
+# --------------------------------------------------------------------------
+
+OFFER_TTL = timedelta(hours=3)
+START_DEADLINE = timedelta(days=1)
+
+
+class AssignmentOffer(BaseModel):
+    account_id: UUID
+    job_role: Literal["lead", "assistant", "inspector"] = "assistant"
+
+
+class AssignmentResponse(BaseModel):
+    decision: Literal["accept", "decline"]
+    reason: str | None = None
+
+
+class AssignmentState(BaseModel):
+    order_id: UUID
+    account_id: UUID
+    worker_name: str
+    status: str
+    offer_expires_at: datetime | None
+    start_deadline_at: datetime | None
+    order_status: str
+
+
+async def _assignment_state(
+    conn: asyncpg.Connection, order_id: UUID, account_id: UUID
+) -> AssignmentState:
+    row = await conn.fetchrow(sql("assignment_context"), order_id, account_id)
+    return AssignmentState(
+        order_id=row["order_id"],
+        account_id=row["account_id"],
+        worker_name=row["worker_name"],
+        status=row["status"],
+        offer_expires_at=row["offer_expires_at"],
+        start_deadline_at=row["start_deadline_at"],
+        order_status=row["order_status"],
+    )
+
+
+@router.post(
+    "/api/work-orders/{order_id}/assignments",
+    response_model=AssignmentState,
+    status_code=201,
+)
+async def offer_assignment(
+    conn: Conn,
+    order_id: UUID,
+    payload: AssignmentOffer,
+    principal: Annotated[Principal, Depends(require_role("supplier", "admin"))],
+) -> AssignmentState:
+    """Offer a work order to a worker, with a three-hour clock on it.
+
+    Consumer is excluded for the obvious reason and worker for a less obvious
+    one: a technician may answer an offer but may not hand themselves a job,
+    because the queue is the dispatcher's to balance.
+
+    A worker who is not approved, has left, or is marked unavailable is refused
+    here rather than left to hold the offer until it expires. Their approval
+    state is the database's answer, not the caller's claim -- the same posture
+    as worker requirement 3.
+    """
+    async with conn.transaction():
+        order = await conn.fetchrow(sql("get_work_order"), order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="work order not found")
+        if order["status"] in ("completed", "cancelled"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"a {order['status']} work order cannot be assigned",
+            )
+
+        worker = await conn.fetchrow(sql("offerable_worker"), payload.account_id)
+        if worker is None:
+            raise HTTPException(status_code=404, detail="no such worker")
+        if worker["approval_status"] != "approved":
+            raise HTTPException(
+                status_code=409,
+                detail=f"worker registration is {worker['approval_status']}",
+            )
+        if worker["left_on"] is not None:
+            raise HTTPException(status_code=409, detail="worker has left")
+        if worker["availability"] == "unavailable":
+            raise HTTPException(status_code=409, detail="worker is unavailable")
+
+        await conn.fetchrow(
+            sql("offer_assignment"),
+            order_id, payload.account_id, OFFER_TTL, payload.job_role,
+        )
+        await conn.fetchval(sql("dispatch_work_order"), order_id)
+
+        state = await _assignment_state(conn, order_id, payload.account_id)
+        await notify(
+            conn,
+            payload.account_id,
+            "work_order_offered",
+            f"New job offer — {order['order_type'].replace('_', ' ')}",
+            body=(
+                f"{order['site_label']} needs a "
+                f"{order['order_type'].replace('_', ' ')}. Accept within three "
+                "hours or it goes to someone else."
+            ),
+            severity="info",
+            entity_type="work_order",
+            entity_id=str(order_id),
+            # The deadline identifies THIS offer. A re-offer after a decline or
+            # an expiry gets a new one, so it notifies again -- see
+            # offer_assignment's ON CONFLICT.
+            dedupe_key=f"wo:{order_id}:offered:{state.offer_expires_at.isoformat()}",
+        )
+    return state
+
+
+@router.patch(
+    "/api/work-orders/{order_id}/assignment",
+    response_model=AssignmentState,
+)
+async def respond_to_assignment(
+    conn: Conn,
+    order_id: UUID,
+    payload: AssignmentResponse,
+    principal: Annotated[Principal, Depends(require_role("worker"))],
+) -> AssignmentState:
+    """Accept or decline an offer made to the caller.
+
+    Deliberately keyed on the token, not on a path parameter: a worker answers
+    their own offer and nobody else's, so there is no id to guess.
+
+    Both statements are guarded on status 'offered', so an offer the jobs sweep
+    expired a moment earlier answers 409 rather than quietly reviving a job that
+    has already been released to somebody else. That race is the whole reason
+    the guard is in the SQL and not in an `if` up here.
+    """
+    async with conn.transaction():
+        before = await conn.fetchrow(
+            sql("assignment_context"), order_id, principal.account_id
+        )
+        if before is None:
+            raise HTTPException(status_code=404, detail="no offer for you here")
+
+        if payload.decision == "accept":
+            updated = await conn.fetchrow(
+                sql("accept_assignment"),
+                order_id, principal.account_id, START_DEADLINE,
+            )
+        else:
+            updated = await conn.fetchrow(
+                sql("decline_assignment"),
+                order_id, principal.account_id, payload.reason,
+            )
+
+        if updated is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"this offer is no longer open (it is {before['status']})",
+            )
+
+        state = await _assignment_state(conn, order_id, principal.account_id)
+
+        # The dispatcher hears both answers. An acceptance is what tells them to
+        # stop looking for someone; a decline is what tells them to start again,
+        # and waiting three hours for the sweep to say so would waste the whole
+        # offer window.
+        accepted = payload.decision == "accept"
+        job = before["order_type"].replace("_", " ")
+        await notify(
+            conn,
+            before["created_by_account_id"],
+            "work_order_offered",
+            f"{state.worker_name} {'accepted' if accepted else 'declined'} — {job}",
+            body=(
+                f"{before['site_label']}: {state.worker_name} has accepted and "
+                "has one day to start."
+                if accepted else
+                f"{before['site_label']}: {state.worker_name} declined"
+                + (f" — {payload.reason}" if payload.reason else "")
+                + ". The order needs reassigning."
+            ),
+            severity="info" if accepted else "warning",
+            entity_type="work_order",
+            entity_id=str(order_id),
+            dedupe_key=(
+                f"wo:{order_id}:{payload.decision}:{principal.account_id}:"
+                f"{before['offer_expires_at'].isoformat()}"
+                if before["offer_expires_at"] else None
+            ),
+        )
+    return state
