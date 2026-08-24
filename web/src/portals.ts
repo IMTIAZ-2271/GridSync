@@ -41,6 +41,7 @@ export const PORTALS: Portal[] = [
       { path: "bills", label: "Bills" },
       { path: "devices", label: "Equipment" },
       { path: "issues", label: "Report an issue" },
+      { path: "visits", label: "Visits" },
     ],
   },
   {
@@ -69,11 +70,12 @@ export const PORTALS: Portal[] = [
   {
     id: "supplier",
     label: "Supplier",
-    blurb: "Utility view across the fleet: sites, telemetry health, billing runs.",
+    blurb: "Utility view across the fleet: dispatch, sites and telemetry health.",
     accent: "bg-portal-supplier",
     base: "/supplier",
     routes: [
       { path: "", label: "Sites" },
+      { path: "dispatch", label: "Dispatch" },
       { path: "equipment", label: "Equipment" },
     ],
   },

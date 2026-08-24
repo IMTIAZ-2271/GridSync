@@ -59,6 +59,21 @@ export default function WorkerOrders() {
 
   const shown = (orders.data ?? []).filter((o) => bucketOf(o.status) === bucket);
 
+  // Answering an offer is a different act from advancing an order: it is the
+  // worker's own two-party agreement, keyed on the token rather than on an id,
+  // and accepting it starts the one-day start deadline the jobs runner sweeps.
+  const respond = useMutation({
+    mutationFn: ({
+      orderId,
+      decision,
+    }: {
+      orderId: string;
+      decision: "accept" | "decline";
+    }) => api.respondToAssignment(orderId, decision),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.workOrders() }),
+  });
+
   const advance = useMutation({
     mutationFn: ({ orderId, status }: { orderId: string; status: WorkOrderStatus }) =>
       api.updateWorkOrderStatus(orderId, status),
@@ -130,8 +145,14 @@ export default function WorkerOrders() {
               onAdvance={(status) =>
                 advance.mutate({ orderId: order.order_id, status })
               }
+              onRespond={(decision) =>
+                respond.mutate({ orderId: order.order_id, decision })
+              }
               pending={
-                advance.isPending && advance.variables?.orderId === order.order_id
+                (advance.isPending &&
+                  advance.variables?.orderId === order.order_id) ||
+                (respond.isPending &&
+                  respond.variables?.orderId === order.order_id)
               }
             />
           ))}
@@ -153,15 +174,20 @@ function OrderRow({
   order,
   myAccountId,
   onAdvance,
+  onRespond,
   pending,
 }: {
   order: WorkOrder;
   myAccountId?: string;
   onAdvance: (status: WorkOrderStatus) => void;
+  onRespond: (decision: "accept" | "decline") => void;
   pending: boolean;
 }) {
   const transitions = transitionsFrom(order.status);
   const mine = order.assignments.find((a) => a.account_id === myAccountId);
+  // An unanswered offer outranks everything else on the row: it has a clock on
+  // it, and ignoring it hands the job to someone else in three hours.
+  const unanswered = mine?.status === "offered";
 
   return (
     <li className="px-5 py-4">
@@ -182,9 +208,29 @@ function OrderRow({
             {order.device_id && " · device-specific"}
             {order.issue_id && " · raised from an issue"}
           </p>
+          {mine && <Deadline assignment={mine} />}
         </div>
 
-        {transitions.length > 0 && (
+        {unanswered ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => onRespond("decline")}
+              className="text-sm text-ink-muted underline disabled:opacity-50"
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => onRespond("accept")}
+              className="rounded-lg bg-portal-worker px-3.5 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {pending ? "Saving…" : "Accept"}
+            </button>
+          </div>
+        ) : transitions.length > 0 && (
           <div className="flex shrink-0 flex-wrap gap-2">
             {transitions.map((t) => (
               <button
@@ -256,5 +302,47 @@ function Figure({
       <dt className="text-ink-muted">{label}</dt>
       <dd className="mt-0.5 font-medium text-ink-2">{value}</dd>
     </div>
+  );
+}
+
+/**
+ * The clock on this worker's own assignment, in words.
+ *
+ * Both deadlines are stored on the assignment and swept every five minutes by
+ * services/jobs, so a second-by-second timer would imply a precision the system
+ * does not have. What matters is whether there is time left and roughly how
+ * much: an unanswered offer goes to somebody else, and an accepted job that is
+ * never started goes back to the dispatcher.
+ */
+function Deadline({ assignment }: { assignment: Assignment }) {
+  const offer = assignment.status === "offered" ? assignment.offer_expires_at : null;
+  const start =
+    assignment.status === "accepted" ? assignment.start_deadline_at : null;
+  const at = offer ?? start;
+  if (!at) return null;
+
+  const mins = Math.round((+new Date(at) - Date.now()) / 60000);
+  const overdue = mins <= 0;
+  const left =
+    mins >= 1440
+      ? `${Math.round(mins / 1440)} day${mins >= 2160 ? "s" : ""}`
+      : mins >= 60
+        ? `${Math.round(mins / 60)} hour${mins >= 90 ? "s" : ""}`
+        : `${Math.max(mins, 0)} min`;
+
+  return (
+    <p className="mt-1 text-xs">
+      <span
+        className={overdue ? "font-medium text-status-critical" : "text-ink-2"}
+      >
+        {offer
+          ? overdue
+            ? "This offer has lapsed — it will be released to someone else."
+            : `Accept within ${left} or it goes to another technician.`
+          : overdue
+            ? "Overdue — start it or it goes back to the dispatcher."
+            : `Start within ${left} or it goes back to the dispatcher.`}
+      </span>
+    </p>
   );
 }

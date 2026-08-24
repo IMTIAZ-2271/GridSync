@@ -197,6 +197,58 @@ export interface IssueStatusBody {
   resolution_notes?: string | null;
 }
 
+export interface CrewMember {
+  account_id: string;
+  worker_name: string;
+  job_role: AssignmentRole;
+}
+
+export interface GivenRating {
+  stars: number;
+  comment: string | null;
+  /** Worker ratings only. One exists per visit, whoever else attended. */
+  worker_account_id?: string | null;
+}
+
+/**
+ * A completed visit to one of this household's sites.
+ *
+ * Carries what the account has already said about it -- verdict and both
+ * ratings -- so the page never needs a second request to know which controls
+ * are still live.
+ */
+export interface Visit {
+  order_id: string;
+  site_id: string;
+  site_label: string;
+  order_type: WorkOrderType;
+  completed_at: Timestamp | null;
+  completion_notes: string | null;
+  issue_id: string | null;
+  issue_title: string | null;
+  issue_status: IssueStatus | null;
+  consumer_confirmed_at: Timestamp | null;
+  consumer_disputed_at: Timestamp | null;
+  consumer_feedback: string | null;
+  supplier_id: string | null;
+  supplier_name: string | null;
+  crew: CrewMember[];
+  worker_rating: GivenRating | null;
+  supplier_rating: GivenRating | null;
+}
+
+export interface RatingBody {
+  subject: "worker" | "supplier";
+  worker_account_id?: string | null;
+  stars: number;
+  comment?: string | null;
+}
+
+export interface VerdictBody {
+  resolved: boolean;
+  feedback?: string | null;
+}
+
 export interface Reading {
   interval_start: Timestamp;
   import_kwh: Decimal;
@@ -395,6 +447,63 @@ export interface Assignment {
   job_role: AssignmentRole;
   status: AssignmentStatus;
   assigned_at: Timestamp;
+  /** Three hours from the offer. Null once answered, expired or declined. */
+  offer_expires_at: Timestamp | null;
+  /** One day from accepting. Null until accepted. */
+  start_deadline_at: Timestamp | null;
+}
+
+export interface WorkOrderCreateBody {
+  issue_id?: string | null;
+  site_id?: string | null;
+  device_id?: string | null;
+  order_type: WorkOrderType;
+  priority?: number | null;
+  scheduled_for?: Timestamp | null;
+}
+
+/** An unresolved issue with no live work order against it. */
+export interface DispatchableIssue {
+  issue_id: string;
+  site_id: string;
+  site_label: string;
+  district: string;
+  device_id: string | null;
+  device_serial: string | null;
+  category: IssueCategory;
+  severity: IssueSeverity;
+  status: IssueStatus;
+  title: string;
+  description: string | null;
+  priority: number;
+  reported_at: Timestamp;
+  reported_by_name: string;
+}
+
+export interface AssignableWorker {
+  account_id: string;
+  full_name: string;
+  employee_code: string;
+  service_district: string;
+  worker_kind: string;
+  availability: string;
+  max_daily_jobs: number;
+  distribution_company_name: string | null;
+  /** Offers plus acceptances outstanding. Capacity already spoken for. */
+  open_jobs: number;
+  /** Null until service_rating has rows -- never 0, which would read as bad. */
+  rating_avg: Decimal | null;
+  rating_count: number;
+}
+
+export interface AssignmentState {
+  order_id: string;
+  account_id: string;
+  worker_name: string;
+  status: AssignmentStatus;
+  offer_expires_at: Timestamp | null;
+  start_deadline_at: Timestamp | null;
+  order_status: WorkOrderStatus;
 }
 
 export interface WorkOrder {
@@ -920,6 +1029,20 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  visits: () => request<Visit[]>("/visits"),
+
+  rateVisit: (orderId: string, body: RatingBody) =>
+    request<Visit>(`/work-orders/${orderId}/rating`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  setIssueVerdict: (issueId: string, body: VerdictBody) =>
+    request<{ issue_id: string; resolved: boolean; status: string }>(
+      `/issues/${issueId}/verdict`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
   siteBills: (siteId: string) => request<Bill[]>(`/sites/${siteId}/bills`),
 
   siteDevices: (siteId: string) =>
@@ -934,6 +1057,36 @@ export const api = {
     request<Issue>("/issues", { method: "POST", body: JSON.stringify(body) }),
 
   listWorkOrders: () => request<WorkOrder[]>("/work-orders"),
+
+  createWorkOrder: (body: WorkOrderCreateBody) =>
+    request<WorkOrder>("/work-orders", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  dispatchableIssues: () =>
+    request<DispatchableIssue[]>("/work-orders/dispatchable-issues"),
+
+  assignableWorkers: (district?: string) =>
+    request<AssignableWorker[]>(
+      "/workers" + (district ? `?district=${encodeURIComponent(district)}` : ""),
+    ),
+
+  offerAssignment: (orderId: string, accountId: string, jobRole = "assistant") =>
+    request<AssignmentState>(`/work-orders/${orderId}/assignments`, {
+      method: "POST",
+      body: JSON.stringify({ account_id: accountId, job_role: jobRole }),
+    }),
+
+  respondToAssignment: (
+    orderId: string,
+    decision: "accept" | "decline",
+    reason?: string,
+  ) =>
+    request<AssignmentState>(`/work-orders/${orderId}/assignment`, {
+      method: "PATCH",
+      body: JSON.stringify({ decision, reason: reason ?? null }),
+    }),
 
   updateWorkOrderStatus: (orderId: string, status: WorkOrderStatus) =>
     request<WorkOrder>(`/work-orders/${orderId}/status`, {
@@ -976,7 +1129,11 @@ export const queryKeys = {
     ["sites", id, "consumption-limit"] as const,
   fleetDevices: () => ["devices"] as const,
   issues: () => ["issues"] as const,
+  visits: () => ["visits"] as const,
   workOrders: () => ["work-orders"] as const,
+  dispatchableIssues: () => ["work-orders", "dispatchable"] as const,
+  assignableWorkers: (district?: string) =>
+    ["workers", district ?? "all"] as const,
   pendingAgreements: () => ["agreements", "pending"] as const,
   pendingWorkers: () => ["workers", "pending"] as const,
   analyticsByArea: () => ["analytics", "by-area"] as const,
