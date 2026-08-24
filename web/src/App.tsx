@@ -10,6 +10,7 @@ import CustomerBills from "./routes/CustomerBills";
 import CustomerDevices from "./routes/CustomerDevices";
 import CustomerMeters from "./routes/CustomerMeters";
 import CustomerIssues from "./routes/CustomerIssues";
+import CustomerSettings from "./routes/CustomerSettings";
 import CustomerVisits from "./routes/CustomerVisits";
 import WorkerOrders from "./routes/WorkerOrders";
 import WorkerIssues from "./routes/WorkerIssues";
@@ -51,6 +52,7 @@ export default function App() {
             <Route path="devices" element={<CustomerDevices />} />
             <Route path="issues" element={<CustomerIssues />} />
             <Route path="visits" element={<CustomerVisits />} />
+            <Route path="settings" element={<CustomerSettings />} />
           </Route>
 
           <Route path="worker">

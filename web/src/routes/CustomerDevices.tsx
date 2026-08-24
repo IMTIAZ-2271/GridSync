@@ -94,13 +94,25 @@ function DeviceRow({ device }: { device: SiteDevice }) {
   const isBillingMeter = device.billing_role === "billing";
   const coverage = device.coverage_pct == null ? null : Number(device.coverage_pct);
 
+  // Consumer requirement 9: no health checking for billing meters -- in the
+  // HOUSEHOLD's view only. The device still appears, with its serial and its
+  // last reading, because that is identification rather than diagnosis; what is
+  // withheld is the verdict, the coverage bar and the interval counts.
+  //
+  // The supplier and the regulator keep all of it (`GET /api/devices`,
+  // /supplier/equipment), and that is not a loophole -- it is the reason this
+  // is safe. Rule 8 means a silent billing meter produces no bill at all, so
+  // somebody has to be watching it; the requirement is that it should not be
+  // the person who would be alarmed and cannot act.
+  const showHealth = !isBillingMeter;
+
   return (
     <li className="px-5 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-ink">
             {roleOf(device)}
-            <Badge tone={health.tone}>{health.label}</Badge>
+            {showHealth && <Badge tone={health.tone}>{health.label}</Badge>}
             {isBillingMeter && <Badge tone="neutral">bills this site</Badge>}
           </p>
           <p className="mt-0.5 truncate text-xs text-ink-muted">
@@ -119,14 +131,22 @@ function DeviceRow({ device }: { device: SiteDevice }) {
         </Link>
       </div>
 
-      <p className="mt-2 text-xs text-ink-muted">{health.hint}</p>
-
-      <CoverageBar
-        received={device.intervals_received}
-        expected={device.intervals_expected}
-        pct={coverage}
-        health={device.health}
-      />
+      {showHealth ? (
+        <>
+          <p className="mt-2 text-xs text-ink-muted">{health.hint}</p>
+          <CoverageBar
+            received={device.intervals_received}
+            expected={device.intervals_expected}
+            pct={coverage}
+            health={device.health}
+          />
+        </>
+      ) : (
+        <p className="mt-2 text-xs text-ink-muted">
+          Your utility monitors this meter. If a reading looks wrong, report a
+          problem and someone will check it.
+        </p>
+      )}
 
       <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-xs">
         <Figure

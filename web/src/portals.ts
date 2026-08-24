@@ -42,6 +42,7 @@ export const PORTALS: Portal[] = [
       { path: "devices", label: "Equipment" },
       { path: "issues", label: "Report an issue" },
       { path: "visits", label: "Visits" },
+      { path: "settings", label: "Settings" },
     ],
   },
   {

@@ -39,3 +39,35 @@ export const CHART_INK = {
   secondary: "#52514e",
   surface: "#fcfcfb",
 };
+
+/**
+ * The two views a household reads its own meter through.
+ *
+ * Consumer requirements 4 and 5 ask for solar readings to have their own
+ * interface rather than being a third line on one chart. The split is real, not
+ * cosmetic: the two views answer different questions and are measured by
+ * different hardware (rule 6 -- only the bidirectional meter knows the
+ * import/export split, only the inverter knows generation). Reading them
+ * together is what makes a household stare at three overlapping lines and
+ * conclude nothing.
+ *
+ * Export sits on the SOLAR side, not the consumption side. It is what the
+ * panels sent out; a house with no panels has none, and putting it beside
+ * import would imply the two are a pair to be compared.
+ */
+export const READING_VIEWS = [
+  {
+    id: "consumption" as const,
+    label: "Consumption",
+    series: ["import"] as SeriesId[],
+    blurb: "Energy drawn from the grid",
+  },
+  {
+    id: "solar" as const,
+    label: "Solar",
+    series: ["generation", "export"] as SeriesId[],
+    blurb: "Produced by the panels, and what was sent back",
+  },
+];
+
+export type ReadingViewId = (typeof READING_VIEWS)[number]["id"];

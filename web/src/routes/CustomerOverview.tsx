@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import {
@@ -6,14 +6,12 @@ import {
   formatKwh,
   formatMoney,
   queryKeys,
-  type SiteDevice,
   type SiteSummary,
 } from "../lib/api";
-import { SERIES, type SeriesId } from "../lib/series";
+import { READING_VIEWS, SERIES, type ReadingViewId } from "../lib/series";
 import { useSelectedSite } from "../components/SitePicker";
 import ReadingsChart from "../components/ReadingsChart";
 import CustomerOnboarding from "./CustomerOnboarding";
-import ConsumptionLimitCard from "../components/ConsumptionLimitCard";
 import {
   Card,
   CardHeader,
@@ -45,22 +43,15 @@ export default function CustomerOverview() {
     enabled: !!siteId,
   });
 
-  // Equipment health is not a headline on this page -- it earns space only
-  // when something is wrong. The one device worth interrupting for is the
-  // billing meter: rule 8 refuses to bill an incomplete period, so its
-  // silence does not produce a wrong bill, it produces no bill at all, and
-  // the customer would otherwise find out by noticing an absence.
-  const devices = useQuery({
-    queryKey: queryKeys.siteDevices(siteId!),
-    queryFn: () => api.siteDevices(siteId!),
-    enabled: !!siteId,
-  });
-
-  // A site with no panels has no generation series to draw. Dropping it must
-  // not shift import or export onto different colours.
-  const series: SeriesId[] = site?.has_solar
-    ? ["import", "export", "generation"]
-    : ["import", "export"];
+  // Consumer requirements 4 and 5: solar readings get their own view rather
+  // than a third line on one chart. A site with no panels is never offered the
+  // solar tab -- an empty chart is not an interface, it is a dead end. The
+  // colour each measure owns does not change between tabs (see lib/series.ts).
+  const [view, setView] = useState<ReadingViewId>("consumption");
+  const views = READING_VIEWS.filter(
+    (v) => v.id === "consumption" || site?.has_solar,
+  );
+  const active = views.find((v) => v.id === view) ?? views[0];
 
   // A newly registered customer (empty meter serial) owns no site at all --
   // an empty dashboard would just look broken. Walk them through building
@@ -71,8 +62,6 @@ export default function CustomerOverview() {
 
   return (
     <div className="space-y-6">
-      {devices.data && <TelemetryNotice devices={devices.data} />}
-
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {summary.isPending || !siteId ? (
           <>
@@ -92,7 +81,28 @@ export default function CustomerOverview() {
       <Card>
         <CardHeader
           title={`Last ${READING_DAYS} days`}
-          subtitle="Half-hourly intervals, in kWh"
+          subtitle={`${active.blurb} · half-hourly intervals, in kWh`}
+          action={
+            views.length > 1 ? (
+              <nav className="flex gap-1" aria-label="Reading type">
+                {views.map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    onClick={() => setView(v.id)}
+                    aria-current={active.id === v.id}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                      active.id === v.id
+                        ? "bg-portal-customer text-white"
+                        : "text-ink-2 hover:bg-hairline/60"
+                    }`}
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </nav>
+            ) : undefined
+          }
         />
         <div className="p-5">
           {readings.isPending || !siteId ? (
@@ -112,61 +122,10 @@ export default function CustomerOverview() {
               hint="The meter has not reported in the last 7 days. If that is unexpected, raise a data gap issue."
             />
           ) : (
-            <ReadingsChart readings={readings.data} series={series} />
+            <ReadingsChart readings={readings.data} series={active.series} />
           )}
         </div>
       </Card>
-
-      {/* Below the chart on purpose: the limit is a setting, and the seven-day
-          series is what someone opens this page to see. */}
-      {siteId && <ConsumptionLimitCard siteId={siteId} />}
-    </div>
-  );
-}
-
-/**
- * Shown only when the billing meter is not reporting cleanly.
- *
- * Deliberately silent on a healthy site: a banner that is always there is a
- * banner nobody reads, and the equipment page is where the full picture
- * lives. Other devices are excluded on purpose -- an inverter gap costs
- * credit and belongs on that page, but it is not worth interrupting the
- * dashboard for.
- */
-function TelemetryNotice({ devices }: { devices: SiteDevice[] }) {
-  const meter = devices.find((d) => d.billing_role === "billing");
-  if (!meter || meter.health === "healthy" || meter.health === "unknown") {
-    return null;
-  }
-
-  const stale =
-    meter.health === "silent" ||
-    meter.health === "no_data" ||
-    meter.health === "faulty";
-
-  return (
-    <div className="rounded-xl border border-hairline bg-surface px-5 py-4">
-      <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-ink">
-        <span aria-hidden className="text-status-critical">
-          !
-        </span>
-        {stale
-          ? "Your billing meter has stopped reporting"
-          : "Readings are missing from your billing meter"}
-      </p>
-      <p className="mt-1 text-xs text-ink-muted">
-        {meter.last_reading_at
-          ? `Last reading ${new Date(meter.last_reading_at).toLocaleString(undefined, {
-              dateStyle: "medium",
-              timeStyle: "short",
-            })}.`
-          : "No readings have arrived from this meter in the last 90 days."}{" "}
-        A period with missing intervals is not billed until it is complete, so
-        figures below may be behind.{" "}
-        <Link to="/customer/devices" className="font-medium text-ink-2 underline">
-          Check equipment
-        </Link>
-      </p>
     </div>
   );
 }
