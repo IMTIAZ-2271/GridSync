@@ -42,6 +42,7 @@ from .db import create_pool
 
 from .routes_agreements import router as agreements_router
 from .routes_analytics import router as analytics_router
+from .routes_applications import router as applications_router
 from .routes_auth import router as auth_router
 from .orgs import router as orgs_router
 from .routes_devices import router as devices_router
@@ -101,3 +102,4 @@ app.include_router(work_orders_router)
 app.include_router(workers_router)
 app.include_router(agreements_router)
 app.include_router(analytics_router)
+app.include_router(applications_router)

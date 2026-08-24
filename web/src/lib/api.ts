@@ -249,6 +249,56 @@ export interface VerdictBody {
   feedback?: string | null;
 }
 
+export type ApplicationStatus =
+  | "submitted"
+  | "under_review"
+  | "accepted"
+  | "rejected"
+  | "withdrawn"
+  | "completed";
+
+/**
+ * A request to have panels fitted on one connection.
+ *
+ * Keyed on a billing point, not a site: a household with two connections may
+ * fit panels on one and not the other. Some fields are only populated for one
+ * side -- contact details of the installer for the household, contact details
+ * of the household for the installer.
+ */
+export interface SolarApplication {
+  application_id: string;
+  site_id: string;
+  site_label: string;
+  district: string;
+  billing_point_id: string;
+  point_label: string;
+  supplier_id: string;
+  supplier_name: string;
+  status: ApplicationStatus;
+  requested_capacity_kw: Decimal;
+  panel_count: number | null;
+  notes: string | null;
+  submitted_at: Timestamp;
+  decided_at: Timestamp | null;
+  decision_notes: string | null;
+  installed_array_id: string | null;
+  supplier_email?: string | null;
+  supplier_phone?: string | null;
+  address_line?: string | null;
+  account_id?: string | null;
+  account_name?: string | null;
+  account_phone?: string | null;
+  site_has_solar?: boolean | null;
+}
+
+export interface ApplicationCreateBody {
+  billing_point_id: string;
+  supplier_id: string;
+  requested_capacity_kw: string;
+  panel_count?: number | null;
+  notes?: string | null;
+}
+
 export interface Reading {
   interval_start: Timestamp;
   import_kwh: Decimal;
@@ -1045,6 +1095,27 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
     ),
 
+  solarApplications: (openOnly = false) =>
+    request<SolarApplication[]>(
+      "/solar-applications" + (openOnly ? "?open_only=true" : ""),
+    ),
+
+  createSolarApplication: (body: ApplicationCreateBody) =>
+    request<SolarApplication>("/solar-applications", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  decideSolarApplication: (
+    id: string,
+    status: ApplicationStatus,
+    notes?: string,
+  ) =>
+    request<SolarApplication>(`/solar-applications/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status, notes: notes ?? null }),
+    }),
+
   siteBills: (siteId: string) => request<Bill[]>(`/sites/${siteId}/bills`),
 
   siteDevices: (siteId: string) =>
@@ -1136,6 +1207,8 @@ export const queryKeys = {
   fleetDevices: () => ["devices"] as const,
   issues: () => ["issues"] as const,
   visits: () => ["visits"] as const,
+  solarApplications: (openOnly = false) =>
+    ["solar-applications", openOnly ? "open" : "all"] as const,
   workOrders: () => ["work-orders"] as const,
   dispatchableIssues: () => ["work-orders", "dispatchable"] as const,
   assignableWorkers: (district?: string) =>

@@ -11,6 +11,7 @@ import CustomerDevices from "./routes/CustomerDevices";
 import CustomerMeters from "./routes/CustomerMeters";
 import CustomerIssues from "./routes/CustomerIssues";
 import CustomerSettings from "./routes/CustomerSettings";
+import CustomerSolar from "./routes/CustomerSolar";
 import CustomerVisits from "./routes/CustomerVisits";
 import WorkerOrders from "./routes/WorkerOrders";
 import WorkerIssues from "./routes/WorkerIssues";
@@ -18,6 +19,7 @@ import GovernmentByArea from "./routes/GovernmentByArea";
 import GovernmentAgreements from "./routes/GovernmentAgreements";
 import GovernmentWorkers from "./routes/GovernmentWorkers";
 import SupplierSites from "./routes/SupplierSites";
+import SupplierApplications from "./routes/SupplierApplications";
 import SupplierDispatch from "./routes/SupplierDispatch";
 import SupplierEquipment from "./routes/SupplierEquipment";
 
@@ -51,6 +53,7 @@ export default function App() {
             <Route path="meters" element={<CustomerMeters />} />
             <Route path="devices" element={<CustomerDevices />} />
             <Route path="issues" element={<CustomerIssues />} />
+            <Route path="solar" element={<CustomerSolar />} />
             <Route path="visits" element={<CustomerVisits />} />
             <Route path="settings" element={<CustomerSettings />} />
           </Route>
@@ -69,6 +72,7 @@ export default function App() {
           <Route path="supplier">
             <Route index element={<SupplierSites />} />
             <Route path="dispatch" element={<SupplierDispatch />} />
+            <Route path="applications" element={<SupplierApplications />} />
             <Route path="equipment" element={<SupplierEquipment />} />
           </Route>
         </Route>
