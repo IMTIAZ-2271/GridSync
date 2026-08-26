@@ -66,10 +66,12 @@ export default function WorkerOrders() {
     mutationFn: ({
       orderId,
       decision,
+      reason,
     }: {
       orderId: string;
       decision: "accept" | "decline";
-    }) => api.respondToAssignment(orderId, decision),
+      reason?: string;
+    }) => api.respondToAssignment(orderId, decision, reason),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.workOrders() }),
   });
@@ -145,8 +147,8 @@ export default function WorkerOrders() {
               onAdvance={(status) =>
                 advance.mutate({ orderId: order.order_id, status })
               }
-              onRespond={(decision) =>
-                respond.mutate({ orderId: order.order_id, decision })
+              onRespond={(decision, reason) =>
+                respond.mutate({ orderId: order.order_id, decision, reason })
               }
               pending={
                 (advance.isPending &&
@@ -180,7 +182,7 @@ function OrderRow({
   order: WorkOrder;
   myAccountId?: string;
   onAdvance: (status: WorkOrderStatus) => void;
-  onRespond: (decision: "accept" | "decline") => void;
+  onRespond: (decision: "accept" | "decline", reason?: string) => void;
   pending: boolean;
 }) {
   const transitions = transitionsFrom(order.status);
@@ -188,6 +190,13 @@ function OrderRow({
   // An unanswered offer outranks everything else on the row: it has a clock on
   // it, and ignoring it hands the job to someone else in three hours.
   const unanswered = mine?.status === "offered";
+  // Declining asks for a reason on the row, the same shape the government's
+  // worker queue uses for a rejection. The dispatcher has to find somebody
+  // else and "why" is most of what tells them who -- but it stays optional: a
+  // technician made to justify a decline will either type nothing useful or
+  // let the offer lapse instead, which costs the dispatcher three hours.
+  const [declining, setDeclining] = useState(false);
+  const [reason, setReason] = useState("");
 
   return (
     <li className="px-5 py-4">
@@ -216,7 +225,8 @@ function OrderRow({
             <button
               type="button"
               disabled={pending}
-              onClick={() => onRespond("decline")}
+              onClick={() => setDeclining((v) => !v)}
+              aria-expanded={declining}
               className="text-sm text-ink-muted underline disabled:opacity-50"
             >
               Decline
@@ -250,6 +260,50 @@ function OrderRow({
           </div>
         )}
       </div>
+
+      {unanswered && declining && (
+        <div className="mt-3 rounded-md border border-hairline bg-plane/50 p-3">
+          <label
+            htmlFor={`decline-reason-${order.order_id}`}
+            className="text-xs font-medium text-ink-2"
+          >
+            Why are you turning this down?{" "}
+            <span className="font-normal text-ink-muted">
+              Optional — the dispatcher sees it straight away.
+            </span>
+          </label>
+          <input
+            id={`decline-reason-${order.order_id}`}
+            type="text"
+            value={reason}
+            maxLength={280}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Already booked in Gulshan that morning"
+            className="mt-1.5 w-full rounded-md border border-hairline bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-ink-muted"
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => onRespond("decline", reason.trim() || undefined)}
+              className="rounded-md bg-portal-worker px-2.5 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {pending ? "Saving…" : "Confirm decline"}
+            </button>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => {
+                setDeclining(false);
+                setReason("");
+              }}
+              className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-ink-2 transition-colors hover:bg-plane disabled:opacity-40"
+            >
+              Keep the offer
+            </button>
+          </div>
+        </div>
+      )}
 
       <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5 text-xs">
         <Figure label="Scheduled" value={formatWhen(order.scheduled_for)} />

@@ -392,11 +392,23 @@ async def respond_to_assignment(
 
         state = await _assignment_state(conn, order_id, principal.account_id)
 
+        # A decline and a lapsed deadline mean the same thing to the order --
+        # nobody is coming -- so they leave the same state behind. The expiry
+        # sweep has always called this (CLAUDE.md decision 3); declining used to
+        # release only the assignment, which left the order 'dispatched' with
+        # nobody on it, still offering its next status to the worker who had
+        # just said no. release_work_order carries its own guard, so a
+        # two-person job whose assistant declined stays dispatched to its lead.
+        accepted = payload.decision == "accept"
+        released = (
+            None if accepted
+            else await conn.fetchval(sql("release_work_order"), order_id)
+        )
+
         # The dispatcher hears both answers. An acceptance is what tells them to
         # stop looking for someone; a decline is what tells them to start again,
         # and waiting three hours for the sweep to say so would waste the whole
         # offer window.
-        accepted = payload.decision == "accept"
         job = before["order_type"].replace("_", " ")
         await notify(
             conn,
@@ -409,7 +421,12 @@ async def respond_to_assignment(
                 if accepted else
                 f"{before['site_label']}: {state.worker_name} declined"
                 + (f" — {payload.reason}" if payload.reason else "")
-                + ". The order needs reassigning."
+                # Only claim it needs reassigning when it actually came back.
+                # While a co-assignee still holds the order the visit is still
+                # happening, and the sweep is careful about exactly this.
+                + (". The order needs reassigning."
+                   if released is not None
+                   else ". The rest of the crew still has it.")
             ),
             severity="info" if accepted else "warning",
             entity_type="work_order",
@@ -531,6 +548,20 @@ async def create_work_order(
             # issue path is already checked above, so this is the bare-site one.
             raise HTTPException(
                 status_code=422, detail=f"unknown reference: {exc.constraint_name}"
+            ) from exc
+        except asyncpg.UniqueViolationError as exc:
+            # one_live_order_per_issue. Since migration a1c4e8b70d3f this is
+            # only reachable as the race the index exists for: two dispatchers
+            # reading the same inbox raising a visit for one complaint at the
+            # same moment. It used to be reachable by a single click -- the
+            # inbox re-offers a complaint whose visit was cancelled or failed,
+            # and the index forbade the second order -- which surfaced as a 500.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a visit is already open for that complaint — refresh the "
+                    "inbox to see who raised it"
+                ),
             ) from exc
 
         row = await conn.fetchrow(sql("get_work_order"), order_id)

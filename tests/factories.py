@@ -311,8 +311,8 @@ async def make_work_order(conn: asyncpg.Connection, site_id: str,
     return await conn.fetchval(
         """
         INSERT INTO work_order (site_id, created_by_account_id, order_type,
-                                status, started_at)
-        VALUES ($1, $2, $3::work_order_type, $4::work_order_status, $5)
+                                status, started_at, issue_id, completed_at)
+        VALUES ($1, $2, $3::work_order_type, $4::work_order_status, $5, $6, $7)
         RETURNING order_id
         """,
         site_id,
@@ -320,6 +320,10 @@ async def make_work_order(conn: asyncpg.Connection, site_id: str,
         overrides.pop("order_type", "meter_swap"),
         overrides.pop("status", "dispatched"),
         overrides.pop("started_at", None),
+        # Raising an order FROM a complaint is what one_live_order_per_issue
+        # governs, so the factory has to be able to build that shape.
+        overrides.pop("issue_id", None),
+        overrides.pop("completed_at", None),
     )
 
 

@@ -37,14 +37,19 @@ SELECT 1 FROM site WHERE site_id = $1 AND account_id = $2;
 
 
 -- name: worker_covers_site
--- True when this worker has any assignment on the given site. This is what
+-- True when this worker has a LIVE assignment on the given site. This is what
 -- lets a worker read a site's issues: they are dispatched to it, so they need
 -- the reported fault, but only for as long as an assignment ties them to it.
+--
+-- 'declined', 'expired' and 'released' do not tie them to anything -- each one
+-- means the work never happened and somebody else is being found. 'completed'
+-- does: a worker keeps the job they actually did, and the site it was on.
 SELECT 1
 FROM work_order_assignment wa
 JOIN work_order w ON w.order_id = wa.order_id
 WHERE wa.account_id = $2
   AND w.site_id = $1
+  AND wa.status IN ('offered', 'accepted', 'completed')
 LIMIT 1;
 
 
@@ -120,6 +125,9 @@ WHERE EXISTS (
     JOIN work_order w ON w.order_id = wa.order_id
     WHERE wa.account_id = $1
       AND w.site_id = i.site_id
+      -- Live assignments only, exactly as worker_covers_site -- a worker who
+      -- declined the visit does not keep reading the household's complaints.
+      AND wa.status IN ('offered', 'accepted', 'completed')
 )
 ORDER BY i.reported_at DESC;
 
@@ -172,13 +180,24 @@ WHERE EXISTS (
     SELECT 1 FROM work_order_assignment mine
     WHERE mine.order_id = w.order_id
       AND mine.account_id = $1
+      -- Live assignments only. An order whose offer this worker declined (or
+      -- let lapse) is not theirs, and leaving it here did more than clutter
+      -- the queue: the row renders whatever buttons its status offers, which
+      -- is how a worker who had said no was shown "Start work" on a job that
+      -- was still sitting at 'dispatched'.
+      AND mine.status IN ('offered', 'accepted', 'completed')
 )
 GROUP BY w.order_id, s.label, s.district
 ORDER BY w.created_at DESC;
 
 
 -- name: worker_assigned_to_order
+-- The guard behind PATCH /api/work-orders/{id}/status. Live assignments only,
+-- for the same reason as the queue above and a stronger one: hiding a button
+-- is not a permission. While this matched a declined row, a worker who had
+-- turned the job down could still walk it into 'in_progress' by URL.
 SELECT 1
 FROM work_order_assignment
 WHERE order_id = $1
-  AND account_id = $2;
+  AND account_id = $2
+  AND status IN ('offered', 'accepted', 'completed');

@@ -461,8 +461,8 @@ WHERE i.site_id IN (SELECT site_id FROM seed_site)
 
 -- ---------------------------------------------------------------------------
 -- Work orders: six across pending / assigned / done.
--- one_order_per_issue allows at most one order per issue, so two orders are
--- raised without an issue (routine scheduled work).
+-- one_live_order_per_issue allows at most one OPEN order per issue, so two
+-- orders are raised without an issue (routine scheduled work).
 -- ---------------------------------------------------------------------------
 CREATE TEMP TABLE seed_order (n int, order_id uuid) ON COMMIT DROP;
 
