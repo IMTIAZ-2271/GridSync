@@ -61,6 +61,14 @@ ORDER BY s.label;
 -- energy totals. Driven FROM site so a missing site yields zero rows and the
 -- handler can answer 404 instead of inventing an empty summary.
 --
+-- $2 narrows every figure to one billing point, or NULL for the whole site.
+-- That is consumer requirement 5's second half: a household that has picked a
+-- meter is asking about that meter, and a credit balance summed over
+-- connections it did not select is a number that belongs to nothing on screen.
+-- The filter is repeated in each subquery rather than applied once at the end
+-- because the three are independent aggregates over different tables --
+-- there is no single row to filter.
+--
 -- The bill is spread across scalar columns rather than nested as jsonb on
 -- purpose: jsonb would round-trip the money through a JSON number and lose the
 -- NUMERIC exactness that rule 5 exists to protect.
@@ -100,6 +108,7 @@ LEFT JOIN LATERAL (
     JOIN billing_period bp ON bp.period_id = b.period_id
     JOIN billing_point pt ON pt.point_id = b.billing_point_id
     WHERE b.site_id = s.site_id
+      AND ($2::uuid IS NULL OR b.billing_point_id = $2)
       -- A voided bill has been superseded by a correction (rule 1); showing it
       -- as "latest" would show the customer a number nobody owes.
       AND b.status <> 'void'
@@ -125,6 +134,7 @@ LEFT JOIN LATERAL (
         LIMIT 1
     ) latest
     WHERE pt.site_id = s.site_id
+      AND ($2::uuid IS NULL OR pt.point_id = $2)
 ) bal ON TRUE
 CROSS JOIN LATERAL (
     SELECT COALESCE(SUM(r.import_kwh) FILTER (WHERE ms.billing_role = 'billing'), 0)::numeric(12,4) AS import_kwh,
@@ -133,31 +143,85 @@ CROSS JOIN LATERAL (
     FROM device_reading r
     JOIN device d ON d.device_id = r.device_id
     LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
+    -- An inverter has no billing point of its own; it hangs off the meter that
+    -- measures it (device.parent_device_id), so scoping by point has to reach
+    -- through the parent or the solar half of a per-meter view would vanish.
+    LEFT JOIN meter_spec pms ON pms.device_id = d.parent_device_id
     WHERE d.site_id = s.site_id
+      AND ($2::uuid IS NULL
+           OR ms.billing_point_id = $2
+           OR pms.billing_point_id = $2)
       AND r.interval_start >= now() - INTERVAL '30 days'
 ) win
 WHERE s.site_id = $1;
 
 
 -- name: site_readings
--- Interval series for the chart. Meter and inverter report on separate rows of
--- device_reading, so they are folded back together on interval_start: one row
--- out per interval carrying all three measures.
+-- Series for the chart. Meter and inverter report on separate rows of
+-- device_reading, so they are folded back together on the bucket: one row out
+-- per bucket carrying all three measures.
 --
 -- Grouping (rather than joining meter rows to inverter rows) is what keeps a
 -- meter swap mid-window from splitting the series in two -- the replacement
 -- device's rows land in the same buckets.
-SELECT r.interval_start,
+--
+-- $2 is the timeframe (consumer requirement 4) and it picks the window AND the
+-- bucket together, because the two cannot be chosen independently: a year of
+-- half-hourly points is 17,520 marks on a chart 700px wide, which is a smear,
+-- and a day of monthly buckets is one bar. Both are derived here rather than
+-- in the handler so the client cannot ask for a combination that does not
+-- render, and so the zone is pinned in one place.
+--
+-- Every timestamp is truncated **in Asia/Dhaka and converted back**, never in
+-- the session zone. `date_trunc('day', ts)` alone resolves against the
+-- caller's TimeZone, so the same request would bucket differently for a client
+-- connecting from another zone and the daily bars would straddle midnight --
+-- the same class of bug the partitioning tests exist to catch.
+--
+-- $3 narrows to one billing point, or NULL for the whole site. An inverter has
+-- no point of its own, so the filter reaches through device.parent_device_id:
+-- without that, selecting a connection would show its import and hide the
+-- generation measured behind the very same meter.
+WITH w AS (
+    SELECT CASE $2::text
+               -- Rolling 23 hours back from the current hour, not midnight
+               -- today. All four windows are rolling, and a calendar day is
+               -- the one that breaks: readings are written through
+               -- *yesterday* (there is no ingest service -- CLAUDE.md, NOT
+               -- DONE), so "today" would be a permanently empty chart on the
+               -- cheapest timeframe to click.
+               WHEN 'day'   THEN date_trunc('hour', now() AT TIME ZONE 'Asia/Dhaka') - INTERVAL '23 hours'
+               WHEN 'week'  THEN date_trunc('day', now() AT TIME ZONE 'Asia/Dhaka') - INTERVAL '6 days'
+               WHEN 'month' THEN date_trunc('day', now() AT TIME ZONE 'Asia/Dhaka') - INTERVAL '29 days'
+               WHEN 'year'  THEN date_trunc('month', now() AT TIME ZONE 'Asia/Dhaka') - INTERVAL '11 months'
+           END AT TIME ZONE 'Asia/Dhaka' AS from_ts,
+           CASE $2::text
+               WHEN 'day'   THEN 'hour'
+               WHEN 'week'  THEN 'interval'
+               WHEN 'month' THEN 'day'
+               WHEN 'year'  THEN 'month'
+           END AS bucket
+)
+SELECT CASE w.bucket
+           WHEN 'interval' THEN r.interval_start
+           ELSE date_trunc(w.bucket, r.interval_start AT TIME ZONE 'Asia/Dhaka')
+                    AT TIME ZONE 'Asia/Dhaka'
+       END AS interval_start,
        COALESCE(SUM(r.import_kwh) FILTER (WHERE ms.billing_role = 'billing'), 0)::numeric(12,4) AS import_kwh,
        COALESCE(SUM(r.export_kwh) FILTER (WHERE ms.billing_role = 'billing'), 0)::numeric(12,4) AS export_kwh,
        COALESCE(SUM(r.generation_kwh), 0)::numeric(12,4)                                        AS generation_kwh
-FROM device_reading r
+FROM w
+CROSS JOIN device_reading r
 JOIN device d ON d.device_id = r.device_id
 LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
+LEFT JOIN meter_spec pms ON pms.device_id = d.parent_device_id
 WHERE d.site_id = $1
-  AND r.interval_start >= now() - make_interval(days => $2::int)
-GROUP BY r.interval_start
-ORDER BY r.interval_start;
+  AND r.interval_start >= w.from_ts
+  AND ($3::uuid IS NULL
+       OR ms.billing_point_id = $3
+       OR pms.billing_point_id = $3)
+GROUP BY 1
+ORDER BY 1;
 
 
 -- name: site_bills
@@ -313,28 +377,42 @@ RETURNING point_id, label, reference;
 -- The meter join is LEFT: a point created but not yet metered is a legal
 -- state (migration d5a7c2b91e40 gave every existing site one, metered or
 -- not), and it is exactly the state the add-a-meter step is for.
+--
+-- LATERAL, not a plain join. Rule 7 constrains one *active* billing meter per
+-- point, but `meter_spec` keeps the retired ones -- so a connection whose
+-- meter has been swapped has two billing meter_spec rows, and joining them
+-- flat returned the point TWICE: once with the new serial and once with NULLs
+-- where the retired device failed `removed_at IS NULL`. Whichever row the
+-- client read first decided whether the page thought the connection had a
+-- meter at all. Found by the net-metering swap, which is the first thing in
+-- the system that retires a meter.
 SELECT pt.point_id,
        pt.label,
        pt.reference,
        pt.created_at,
-       d.device_id  AS meter_device_id,
-       d.serial_no  AS meter_serial,
-       d.last_seen_at AS meter_last_seen_at,
+       meter.device_id    AS meter_device_id,
+       meter.serial_no    AS meter_serial,
+       meter.last_seen_at AS meter_last_seen_at,
        EXISTS (
            SELECT 1
            FROM solar_array sa
            JOIN device inv ON inv.device_id = sa.inverter_device_id
            WHERE sa.status <> 'decommissioned'
              AND inv.removed_at IS NULL
-             AND inv.parent_device_id = d.device_id
+             AND inv.parent_device_id = meter.device_id
        ) AS has_solar
 FROM billing_point pt
-LEFT JOIN meter_spec ms
-       ON ms.billing_point_id = pt.point_id
+LEFT JOIN LATERAL (
+    SELECT d.device_id, d.serial_no, d.last_seen_at
+    FROM meter_spec ms
+    JOIN device d ON d.device_id = ms.device_id
+    WHERE ms.billing_point_id = pt.point_id
       AND ms.billing_role = 'billing'
-LEFT JOIN device d
-       ON d.device_id = ms.device_id
       AND d.removed_at IS NULL
+    -- Belt and braces: rule 7's triggers already guarantee at most one, and
+    -- one row out per point is what the caller is entitled to assume.
+    LIMIT 1
+) meter ON TRUE
 WHERE pt.site_id = $1
   AND pt.retired_at IS NULL
 ORDER BY pt.created_at, pt.label;

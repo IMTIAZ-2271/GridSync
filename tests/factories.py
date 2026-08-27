@@ -311,8 +311,10 @@ async def make_work_order(conn: asyncpg.Connection, site_id: str,
     return await conn.fetchval(
         """
         INSERT INTO work_order (site_id, created_by_account_id, order_type,
-                                status, started_at, issue_id, completed_at)
-        VALUES ($1, $2, $3::work_order_type, $4::work_order_status, $5, $6, $7)
+                                status, started_at, issue_id, completed_at,
+                                meter_application_id, agreement_id)
+        VALUES ($1, $2, $3::work_order_type, $4::work_order_status, $5, $6, $7,
+                $8, $9)
         RETURNING order_id
         """,
         site_id,
@@ -324,6 +326,11 @@ async def make_work_order(conn: asyncpg.Connection, site_id: str,
         # governs, so the factory has to be able to build that shape.
         overrides.pop("issue_id", None),
         overrides.pop("completed_at", None),
+        # And since b7d3f5a92c14 an order can instead fulfil an application.
+        # order_single_origin forbids more than one of the three, which is
+        # itself worth being able to build and assert.
+        overrides.pop("meter_application_id", None),
+        overrides.pop("agreement_id", None),
     )
 
 

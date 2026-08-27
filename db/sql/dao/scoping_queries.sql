@@ -151,6 +151,15 @@ SELECT w.order_id,
        w.completed_at,
        w.completion_notes,
        w.failure_reason,
+       -- Same six as the other two order aggregates (migration b7d3f5a92c14).
+       -- The worker's queue is where the serial is *recorded*, so it is also
+       -- where it has to be readable back.
+       w.meter_application_id,
+       w.agreement_id,
+       w.installed_serial_no,
+       w.consumer_confirmed_at,
+       w.consumer_disputed_at,
+       w.consumer_note,
        w.created_at,
        COALESCE(
            json_agg(

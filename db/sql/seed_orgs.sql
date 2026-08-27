@@ -237,4 +237,68 @@ WHERE a.role = 'supplier'
       SELECT 1 FROM supplier_profile sp WHERE sp.account_id = a.account_id
   );
 
+-- ---------------------------------------------------------------------------
+-- Every meter that exists was issued to somebody.
+--
+-- Migration c9e2f4a71b83 made `meter_asset` the record of hardware issued to
+-- an account, and backfilled the rows that existed when it ran. A database
+-- built from scratch runs the seeds AFTER that migration, so the seeded
+-- meters would otherwise have no asset behind them -- the demo household
+-- would open /customer/meters and be told it owns none of the meters it is
+-- plainly billed for.
+--
+-- Same projection as the migration's backfill, and idempotent on the device:
+-- re-running adds nothing.
+-- ---------------------------------------------------------------------------
+INSERT INTO meter_asset (
+    account_id, serial_no, manufacturer, model,
+    issued_by_company_id, issued_at, device_id
+)
+SELECT s.account_id,
+       d.serial_no,
+       d.manufacturer,
+       d.model,
+       bp.distribution_company_id,
+       d.installed_at,
+       d.device_id
+FROM device d
+JOIN site s ON s.site_id = d.site_id
+LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
+LEFT JOIN billing_point bp ON bp.point_id = ms.billing_point_id
+WHERE d.device_type = 'meter'
+  AND NOT EXISTS (
+      SELECT 1 FROM meter_asset ma WHERE ma.device_id = d.device_id
+  );
+
+-- ---------------------------------------------------------------------------
+-- Two spare meters for the demo household.
+--
+-- Not decoration: since c9e2f4a71b83 a consumer adds a meter by choosing one
+-- the utility already issued them, so an account with none can only ever apply
+-- and wait. That IS the intended flow -- and it is also demoable from both
+-- ends only if somebody starts with stock in hand. Serials are prefixed the
+-- way an unissued serial is minted at approval, so nothing here pretends to be
+-- a manufacturer's number.
+--
+-- Keyed on the serial rather than counted, so re-running is a no-op instead of
+-- handing out two more every time.
+-- ---------------------------------------------------------------------------
+INSERT INTO meter_asset (
+    account_id, serial_no, manufacturer, model, issued_by_company_id
+)
+SELECT a.account_id,
+       spare.serial_no,
+       'Hexing',
+       'HXE310-BD',
+       (SELECT dc.company_id
+        FROM distribution_company dc
+        ORDER BY dc.code
+        LIMIT 1)
+FROM account a
+CROSS JOIN (VALUES ('GSM-DEMO0001'), ('GSM-DEMO0002')) AS spare(serial_no)
+WHERE a.email = 'customer@demo.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM meter_asset ma WHERE ma.serial_no = spare.serial_no
+  );
+
 COMMIT;

@@ -14,7 +14,7 @@ import {
   APPLICATION_STATUS_TONE,
   isOpenApplication,
 } from "../lib/applications";
-import { useSelectedSite } from "../components/SitePicker";
+import { useSelectedSite } from "./SitePicker";
 import {
   Badge,
   Card,
@@ -22,23 +22,23 @@ import {
   EmptyState,
   ErrorState,
   Skeleton,
-} from "../components/ui";
+} from "./ui";
 
 /**
  * Consumer requirement 7's install half: pick a nearby installer and apply.
  *
- * The requirement bundles two things that happen months apart, and this page is
- * deliberately only the first. Applying to an installer is choosing who climbs
- * on the roof. **Net metering is separate** -- that is the regulator agreeing
- * that what the panels produce may be sold back, and it only makes sense once
- * the panels exist. The page says so rather than offering both and letting a
- * household submit them in the wrong order.
+ * One of the three panels on /customer/applications. The requirement bundles
+ * two things that happen months apart and this is deliberately only the first:
+ * applying to an installer is choosing who climbs on the roof. **Net metering
+ * is a different application** -- the regulator agreeing that what the panels
+ * produce may be sold back -- and it only makes sense once the panels exist,
+ * which is why it is its own tab rather than another field on this form.
  *
  * Installers are filtered to the site's district, because the requirement asks
  * for a supplier "in the consumer's nearby region" -- and sorted by rating,
  * with the unrated shown as unrated rather than as zero stars.
  */
-export default function CustomerSolar() {
+export default function SolarApplications() {
   const queryClient = useQueryClient();
   const { siteId, site } = useSelectedSite();
   const [showForm, setShowForm] = useState(false);
@@ -94,7 +94,7 @@ export default function CustomerSolar() {
             ) : (
               <p>
                 An installer surveys your roof and fits the panels. Once they
-                are in, applying for <b>net metering</b> is a separate step —
+                are in, applying for <b>net metering</b> is the next tab —
                 that is your utility agreeing to credit what you send back to
                 the grid, and it only makes sense once there is something to
                 send.
@@ -363,8 +363,9 @@ function ApplicationRow({
           )}
           {app.status === "completed" && (
             <p className="mt-1 text-sm text-ink-2">
-              Next: register the array and apply for net metering on the{" "}
-              <b>Meters</b> page, so your exports start earning credit.
+              Next: register the array on the <b>Meters</b> page, then apply
+              for <b>net metering</b> on the next tab so your exports start
+              earning credit.
             </p>
           )}
           {app.status === "accepted" && app.supplier_phone && (

@@ -5,6 +5,7 @@ import {
   api,
   queryKeys,
   type ConnectionType,
+  type MeterAsset,
   type TariffPlan,
 } from "../lib/api";
 import { useSelectedSite } from "../components/SitePicker";
@@ -20,6 +21,15 @@ import { FIELD } from "../components/AuthShell";
  * roughly 4,300 rows in one request/response, so the finishing screen shows
  * a simulated progress bar per step rather than a spinner with no sense of
  * how long "a few seconds" actually is.
+ *
+ * **Step 2 no longer asks for a serial number.** Since migration c9e2f4a71b83
+ * a meter is hardware the distribution company issued against an identity, and
+ * the household chooses which of *theirs* serves this connection. Most people
+ * arriving here have none, so the step has a second shape: create the site and
+ * file a meter application, and stop there. That is a real dead end for a new
+ * account -- no readings, no bill until an official issues one -- and it is
+ * the truthful one. The alternative was letting a web form conjure hardware
+ * that does not exist, which is what this whole change removes.
  */
 
 const CONNECTION_TYPES: { id: ConnectionType; label: string }[] = [
@@ -28,7 +38,7 @@ const CONNECTION_TYPES: { id: ConnectionType; label: string }[] = [
   { id: "industrial", label: "Industrial" },
 ];
 
-type FinishPhase = "site" | "meter" | "solar" | "billing" | "done";
+type FinishPhase = "site" | "meter" | "application" | "solar" | "billing" | "done";
 type StepStatus = "pending" | "active" | "done" | "error";
 
 interface SiteForm {
@@ -42,9 +52,10 @@ interface SiteForm {
 }
 
 interface MeterForm {
-  serial_no: string;
-  manufacturer: string;
-  model: string;
+  /** Which issued meter to install. Empty when they have none. */
+  meter_asset_id: string;
+  /** Only used on the apply path -- what the new meter is for. */
+  reason: string;
 }
 
 interface SolarForm {
@@ -74,9 +85,8 @@ export default function CustomerOnboarding() {
   });
 
   const [meter, setMeter] = useState<MeterForm>({
-    serial_no: "",
-    manufacturer: "Hexing",
-    model: "HXE310-BD",
+    meter_asset_id: "",
+    reason: "",
   });
 
   const [solar, setSolar] = useState<SolarForm>({
@@ -99,6 +109,28 @@ export default function CustomerOnboarding() {
     queryFn: () => api.listTariffPlans(site.connection_type),
   });
 
+  // Account-level, not site-level, so it can be asked before the site exists:
+  // a meter is issued to the person, and one sitting spare can go on whichever
+  // address they are setting up.
+  const assetsQuery = useQuery({
+    queryKey: queryKeys.meterAssets(),
+    queryFn: api.meterAssets,
+  });
+  const available: MeterAsset[] = (assetsQuery.data ?? []).filter(
+    (a) => a.available,
+  );
+  const hasMeter = available.length > 0;
+
+  // Default to the first available meter, and re-default if the list arrives
+  // after the step was rendered.
+  useEffect(() => {
+    if (!available.length) return;
+    if (!available.some((a) => a.meter_asset_id === meter.meter_asset_id)) {
+      setMeter((m) => ({ ...m, meter_asset_id: available[0].meter_asset_id }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assetsQuery.data]);
+
   // Default (and re-default, on a connection-type change) to the first plan
   // that matches, so the field is never left pointing at a stale selection.
   useEffect(() => {
@@ -113,6 +145,7 @@ export default function CustomerOnboarding() {
   const [finishing, setFinishing] = useState(false);
   const [phase, setPhase] = useState<FinishPhase | null>(null);
   const [withSolar, setWithSolar] = useState(false);
+  const [applied, setApplied] = useState(false);
   const [failedPhase, setFailedPhase] = useState<FinishPhase | null>(null);
 
   const siteValid =
@@ -122,11 +155,55 @@ export default function CustomerOnboarding() {
     Number(site.sanctioned_load_kw) > 0 &&
     site.tariff_plan_id;
 
-  const meterValid =
-    meter.serial_no.trim() && meter.manufacturer.trim() && meter.model.trim();
+  const meterValid = Boolean(meter.meter_asset_id);
 
   const solarValid =
     Number(solar.capacity_kw) > 0 && Number(solar.panel_count) > 0;
+
+  /**
+   * The other ending: a household with no meter to install.
+   *
+   * The site is still created -- it is a real address and the application has
+   * to name one -- and then we stop. There is deliberately no backfill and no
+   * billing run: with no meter there are no readings, and a bill cut from
+   * nothing would be a fiction.
+   */
+  async function applyInstead() {
+    setError(null);
+    setFailedPhase(null);
+    setWithSolar(false);
+    setApplied(true);
+    setFinishing(true);
+    try {
+      setPhase("site");
+      const createdSite = await api.createSite({
+        address_line: site.address_line.trim(),
+        city: site.city.trim(),
+        district: site.district.trim(),
+        postal_code: site.postal_code.trim() || null,
+        connection_type: site.connection_type,
+        sanctioned_load_kw: Number(site.sanctioned_load_kw),
+        tariff_plan_id: site.tariff_plan_id,
+      });
+
+      setPhase("application");
+      await api.applyForMeter({
+        site_id: createdSite.site_id,
+        reason: meter.reason.trim() || null,
+      });
+
+      await queryClient.invalidateQueries({ queryKey: queryKeys.sites() });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.meterApplications(),
+      });
+      setSiteId(createdSite.site_id);
+      setPhase("done");
+    } catch (err) {
+      setFailedPhase(phase);
+      setError(err instanceof Error ? err.message : "Setup failed");
+      setFinishing(false);
+    }
+  }
 
   async function finish(includeSolar: boolean) {
     setError(null);
@@ -147,9 +224,7 @@ export default function CustomerOnboarding() {
 
       setPhase("meter");
       await api.registerMeter(createdSite.site_id, {
-        serial_no: meter.serial_no.trim(),
-        manufacturer: meter.manufacturer.trim(),
-        model: meter.model.trim(),
+        meter_asset_id: meter.meter_asset_id,
       });
 
       if (includeSolar) {
@@ -180,6 +255,7 @@ export default function CustomerOnboarding() {
       <FinishingScreen
         phase={phase}
         withSolar={withSolar}
+        applied={applied}
         error={error}
         failedPhase={failedPhase}
         onRetry={() => {
@@ -374,40 +450,75 @@ export default function CustomerOnboarding() {
         {step === 2 && (
           <>
             <CardHeader
-              title="Register the billing meter"
-              subtitle="The one bidirectional meter that measures import and export at the grid boundary."
+              title={hasMeter ? "Install your billing meter" : "You need a meter"}
+              subtitle={
+                hasMeter
+                  ? "The one bidirectional meter that measures import and export at the grid boundary."
+                  : "Meters are issued by your distribution company, not registered here."
+              }
             />
             <div className="space-y-4 p-5">
-              <Field label="Meter serial">
-                <input
-                  value={meter.serial_no}
-                  onChange={(e) =>
-                    setMeter((m) => ({ ...m, serial_no: e.target.value }))
-                  }
-                  placeholder="HXE-000123"
-                  className={`font-mono ${FIELD}`}
-                />
-              </Field>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Manufacturer">
-                  <input
-                    value={meter.manufacturer}
-                    onChange={(e) =>
-                      setMeter((m) => ({ ...m, manufacturer: e.target.value }))
-                    }
-                    className={FIELD}
-                  />
-                </Field>
-                <Field label="Model">
-                  <input
-                    value={meter.model}
-                    onChange={(e) =>
-                      setMeter((m) => ({ ...m, model: e.target.value }))
-                    }
-                    className={FIELD}
-                  />
-                </Field>
-              </div>
+              {assetsQuery.isPending ? (
+                <div className="skeleton h-9 w-full" aria-hidden />
+              ) : hasMeter ? (
+                <>
+                  <Field label="Which meter">
+                    <select
+                      value={meter.meter_asset_id}
+                      onChange={(e) =>
+                        setMeter((m) => ({
+                          ...m,
+                          meter_asset_id: e.target.value,
+                        }))
+                      }
+                      className={FIELD}
+                    >
+                      {available.map((a) => (
+                        <option key={a.meter_asset_id} value={a.meter_asset_id}>
+                          {a.serial_no}
+                          {a.manufacturer
+                            ? ` — ${a.manufacturer} ${a.model ?? ""}`
+                            : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <p className="text-xs text-ink-muted">
+                    Meters issued to you that are not already installed
+                    somewhere.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-ink-2">
+                    None of the meters issued to you is free, so there is
+                    nothing to install here yet. We will create the site and
+                    send a request to your district office; once they issue a
+                    meter it appears under <b>Your meters</b> and you can put it
+                    on this connection.
+                  </p>
+                  <Field label="What is the meter for? (optional)">
+                    <input
+                      value={meter.reason}
+                      onChange={(e) =>
+                        setMeter((m) => ({ ...m, reason: e.target.value }))
+                      }
+                      placeholder="New connection at this address"
+                      className={FIELD}
+                    />
+                  </Field>
+                  <p className="text-xs text-ink-muted">
+                    Until a meter is installed this site has no readings and no
+                    bills. That is the truth of it -- nothing is measuring yet.
+                  </p>
+                </>
+              )}
+
+              {error && (
+                <p className="rounded-md bg-status-critical/10 px-3 py-2 text-xs text-status-critical">
+                  {error}
+                </p>
+              )}
 
               <div className="flex justify-between pt-2">
                 <button
@@ -417,14 +528,24 @@ export default function CustomerOnboarding() {
                 >
                   Back
                 </button>
-                <button
-                  type="button"
-                  disabled={!meterValid}
-                  onClick={() => setStep(3)}
-                  className="rounded-md bg-series-import px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Continue
-                </button>
+                {hasMeter ? (
+                  <button
+                    type="button"
+                    disabled={!meterValid}
+                    onClick={() => setStep(3)}
+                    className="rounded-md bg-series-import px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Continue
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={applyInstead}
+                    className="rounded-md bg-series-import px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
+                  >
+                    Create site and apply
+                  </button>
+                )}
               </div>
             </div>
           </>
@@ -546,19 +667,24 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function FinishingScreen({
   phase,
   withSolar,
+  applied,
   error,
   failedPhase,
   onRetry,
 }: {
   phase: FinishPhase | null;
   withSolar: boolean;
+  /** True on the no-meter path: site created, application filed, and stop. */
+  applied: boolean;
   error: string | null;
   failedPhase: FinishPhase | null;
   onRetry: () => void;
 }) {
-  const order: FinishPhase[] = withSolar
-    ? ["site", "meter", "solar", "billing"]
-    : ["site", "meter", "billing"];
+  const order: FinishPhase[] = applied
+    ? ["site", "application"]
+    : withSolar
+      ? ["site", "meter", "solar", "billing"]
+      : ["site", "meter", "billing"];
 
   function statusOf(p: FinishPhase): StepStatus {
     if (failedPhase === p) return "error";
@@ -574,10 +700,18 @@ function FinishingScreen({
     <div className="mx-auto max-w-md">
       <Card>
         <CardHeader
-          title={phase === "done" ? "You're all set" : "Setting up your connection"}
+          title={
+            phase === "done"
+              ? applied
+                ? "Request sent"
+                : "You're all set"
+              : "Setting up your connection"
+          }
           subtitle={
             phase === "done"
-              ? "Redirecting to your dashboard."
+              ? applied
+                ? "Your district office will decide, and you will be notified."
+                : "Redirecting to your dashboard."
               : "This takes a few seconds -- each device backfills 90 days of readings."
           }
         />
@@ -586,23 +720,40 @@ function FinishingScreen({
             label="Site"
             status={statusOf("site")}
           />
-          <StepRow
-            label="Billing meter"
-            detail="Backfilling 90 days of readings (~4,300 rows)"
-            status={statusOf("meter")}
-          />
-          {withSolar && (
+          {applied ? (
             <StepRow
-              label="Solar array"
-              detail="Backfilling 90 days of generation (~4,300 rows)"
-              status={statusOf("solar")}
+              label="Meter application"
+              detail="Sending it to your district office"
+              status={statusOf("application")}
             />
+          ) : (
+            <>
+              <StepRow
+                label="Billing meter"
+                detail="Backfilling 90 days of readings (~4,300 rows)"
+                status={statusOf("meter")}
+              />
+              {withSolar && (
+                <StepRow
+                  label="Solar array"
+                  detail="Backfilling 90 days of generation (~4,300 rows)"
+                  status={statusOf("solar")}
+                />
+              )}
+              <StepRow
+                label="First bills"
+                detail="Billing every complete month"
+                status={statusOf("billing")}
+              />
+            </>
           )}
-          <StepRow
-            label="First bills"
-            detail="Billing every complete month"
-            status={statusOf("billing")}
-          />
+
+          {applied && phase === "done" && (
+            <p className="rounded-md bg-plane px-3 py-2 text-xs text-ink-2">
+              Nothing is measuring this site yet, so there are no readings and
+              no bills. Both start the moment you install a meter on it.
+            </p>
+          )}
 
           {error && (
             <div className="space-y-3">

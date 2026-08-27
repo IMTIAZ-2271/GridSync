@@ -77,8 +77,24 @@ export default function WorkerOrders() {
   });
 
   const advance = useMutation({
-    mutationFn: ({ orderId, status }: { orderId: string; status: WorkOrderStatus }) =>
-      api.updateWorkOrderStatus(orderId, status),
+    mutationFn: ({
+      orderId,
+      status,
+      serial,
+      note,
+    }: {
+      orderId: string;
+      status: WorkOrderStatus;
+      serial?: string;
+      note?: string;
+    }) =>
+      api.updateWorkOrderStatus(orderId, status, {
+        installed_serial_no: serial ?? null,
+        // The same field carries the completion note and the failure reason;
+        // which one the server keeps follows from the status it is given.
+        completion_notes: status === "completed" ? note ?? null : null,
+        failure_reason: status === "failed" ? note ?? null : null,
+      }),
     // Refetch rather than patching the cache by hand: the server maintains
     // started_at and completed_at inside update_work_order_status, so the row
     // that comes back carries timestamps the client never computed and must
@@ -144,8 +160,8 @@ export default function WorkerOrders() {
               key={order.order_id}
               order={order}
               myAccountId={account?.account_id}
-              onAdvance={(status) =>
-                advance.mutate({ orderId: order.order_id, status })
+              onAdvance={(status, serial, note) =>
+                advance.mutate({ orderId: order.order_id, status, serial, note })
               }
               onRespond={(decision, reason) =>
                 respond.mutate({ orderId: order.order_id, decision, reason })
@@ -165,7 +181,10 @@ export default function WorkerOrders() {
         <p className="border-t border-hairline px-5 py-3 text-xs text-status-critical">
           {advance.error instanceof ApiError && advance.error.status === 404
             ? "That order is no longer assigned to you."
-            : `Could not update that order: ${advance.error.message}`}
+            : advance.error instanceof ApiError &&
+                typeof advance.error.detail === "string"
+              ? advance.error.detail
+              : `Could not update that order: ${advance.error.message}`}
         </p>
       )}
     </Card>
@@ -181,7 +200,7 @@ function OrderRow({
 }: {
   order: WorkOrder;
   myAccountId?: string;
-  onAdvance: (status: WorkOrderStatus) => void;
+  onAdvance: (status: WorkOrderStatus, serial?: string, note?: string) => void;
   onRespond: (decision: "accept" | "decline", reason?: string) => void;
   pending: boolean;
 }) {
@@ -197,6 +216,19 @@ function OrderRow({
   // let the offer lapse instead, which costs the dispatcher three hours.
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState("");
+
+  // Completing an install or a swap needs the serial of the meter actually
+  // fitted -- the API refuses it otherwise (422), because the official who
+  // registers the meter reads this number and never sees the hardware. So the
+  // button opens a form instead of firing. Every other order type, and every
+  // other status, still advances in one click.
+  const [closing, setClosing] = useState<WorkOrderStatus | null>(null);
+  const [serial, setSerial] = useState(order.installed_serial_no ?? "");
+  const [note, setNote] = useState("");
+  const fitsAMeter =
+    order.order_type === "meter_install" || order.order_type === "meter_swap";
+  const fulfilsApplication =
+    order.meter_application_id !== null || order.agreement_id !== null;
 
   return (
     <li className="px-5 py-4">
@@ -216,6 +248,8 @@ function OrderRow({
             {mine && ` · you are ${mine.job_role}`}
             {order.device_id && " · device-specific"}
             {order.issue_id && " · raised from an issue"}
+            {order.meter_application_id && " · new meter for the household"}
+            {order.agreement_id && " · net-metering inspection"}
           </p>
           {mine && <Deadline assignment={mine} />}
         </div>
@@ -247,7 +281,11 @@ function OrderRow({
                 key={t.to}
                 type="button"
                 disabled={pending}
-                onClick={() => onAdvance(t.to)}
+                onClick={() =>
+                  fitsAMeter && (t.to === "completed" || t.to === "failed")
+                    ? setClosing(closing === t.to ? null : t.to)
+                    : onAdvance(t.to)
+                }
                 className={
                   t.emphasis === "primary"
                     ? "rounded-md bg-portal-worker px-2.5 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
@@ -300,6 +338,88 @@ function OrderRow({
               className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-ink-2 transition-colors hover:bg-plane disabled:opacity-40"
             >
               Keep the offer
+            </button>
+          </div>
+        </div>
+      )}
+
+      {closing && (
+        <div className="mt-3 space-y-2 rounded-md border border-hairline bg-plane/50 p-3">
+          {closing === "completed" ? (
+            <>
+              <label className="block text-xs font-medium text-ink-2">
+                Serial of the meter you fitted{" "}
+                <span className="font-normal text-ink-muted">
+                  Required — the district office registers this exact number to
+                  the household.
+                </span>
+                <input
+                  type="text"
+                  value={serial}
+                  maxLength={64}
+                  onChange={(e) => setSerial(e.target.value)}
+                  placeholder="HXE-2026-04417"
+                  className="mt-1.5 w-full rounded-md border border-hairline bg-surface px-2.5 py-1.5 font-mono text-sm text-ink placeholder:text-ink-muted"
+                />
+              </label>
+              <label className="block text-xs font-medium text-ink-2">
+                Anything worth recording{" "}
+                <span className="font-normal text-ink-muted">Optional.</span>
+                <input
+                  type="text"
+                  value={note}
+                  maxLength={280}
+                  onChange={(e) => setNote(e.target.value)}
+                  className="mt-1.5 w-full rounded-md border border-hairline bg-surface px-2.5 py-1.5 text-sm text-ink"
+                />
+              </label>
+            </>
+          ) : (
+            <label className="block text-xs font-medium text-ink-2">
+              Why could you not finish?{" "}
+              <span className="font-normal text-ink-muted">
+                {fulfilsApplication
+                  ? "The district office and the household both see this."
+                  : "The dispatcher sees this."}
+              </span>
+              <input
+                type="text"
+                value={note}
+                maxLength={280}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="No safe access to the meter position"
+                className="mt-1.5 w-full rounded-md border border-hairline bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-ink-muted"
+              />
+            </label>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={
+                pending || (closing === "completed" && !serial.trim())
+              }
+              onClick={() => {
+                onAdvance(
+                  closing,
+                  serial.trim() || undefined,
+                  note.trim() || undefined,
+                );
+                setClosing(null);
+              }}
+              className="rounded-md bg-portal-worker px-2.5 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {pending
+                ? "Saving…"
+                : closing === "completed"
+                  ? "Mark complete"
+                  : "Mark failed"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setClosing(null)}
+              className="rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-ink-2 transition-colors hover:bg-plane"
+            >
+              Cancel
             </button>
           </div>
         </div>

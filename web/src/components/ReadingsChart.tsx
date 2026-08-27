@@ -9,7 +9,7 @@ import {
 } from "recharts";
 
 import { CHART_INK, SERIES, type SeriesId } from "../lib/series";
-import { toNumber, type Reading } from "../lib/api";
+import { toNumber, type Reading, type TimeframeId } from "../lib/api";
 
 interface Point {
   t: number;
@@ -19,26 +19,80 @@ interface Point {
 }
 
 /**
- * Interval energy over the selected window.
+ * How each timeframe is read off the axis.
+ *
+ * The bucket is chosen server-side with the window (see site_readings), so the
+ * chart is told which timeframe it is drawing rather than inferring it from
+ * the spacing of the points -- a window with a gap in it would infer wrong.
+ *
+ * `unit` is the y-axis label and it MUST track the bucket: leaving it at
+ * "kWh / 30 min" while plotting daily totals overstates every reading by 48x
+ * to anyone who reads the axis.
+ *
+ * `tick` decides which points get a label. There is no one rule: a day of
+ * hourly points wants every third hour, a month of daily ones has a midnight
+ * at every single point and would otherwise label all thirty.
+ */
+const FRAMES: Record<
+  TimeframeId,
+  {
+    unit: string;
+    tick: (d: Date, i: number) => boolean;
+    label: Intl.DateTimeFormatOptions;
+    tip: Intl.DateTimeFormatOptions;
+  }
+> = {
+  day: {
+    unit: "kWh / hour",
+    tick: (d) => d.getHours() % 3 === 0,
+    label: { hour: "2-digit", minute: "2-digit" },
+    tip: { hour: "2-digit", minute: "2-digit" },
+  },
+  week: {
+    unit: "kWh / 30 min",
+    tick: (d) => d.getHours() === 0 && d.getMinutes() === 0,
+    label: { day: "numeric", month: "short" },
+    tip: { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" },
+  },
+  month: {
+    unit: "kWh / day",
+    tick: (_d, i) => i % 3 === 0,
+    label: { day: "numeric", month: "short" },
+    tip: { day: "numeric", month: "short" },
+  },
+  year: {
+    unit: "kWh / month",
+    tick: () => true,
+    label: { month: "short" },
+    tip: { month: "long", year: "numeric" },
+  },
+};
+
+/**
+ * Energy over the selected window.
  *
  * Readings arrive as exact decimal strings and are parsed to numbers only
  * here, at the plotting boundary -- a pixel position cannot be a decimal
  * string, and nothing downstream of this treats the parsed value as money.
  *
- * The 30-minute intervals are plotted raw rather than rolled up to daily
- * totals. The daily solar arc is the shape that makes a net-metering site
- * legible at a glance -- generation climbing over midday, export tracking it
- * with the household's own draw subtracted out -- and averaging flattens
- * exactly that.
+ * Within a window the buckets are plotted raw rather than smoothed. On the
+ * day and week frames the daily solar arc is the shape that makes a
+ * net-metering site legible at a glance -- generation climbing over midday,
+ * export tracking it with the household's own draw subtracted out -- and
+ * averaging flattens exactly that.
  */
 export default function ReadingsChart({
   readings,
   series,
+  timeframe = "week",
 }: {
   readings: Reading[];
   /** Which measures to draw. A site with no panels omits generation. */
   series: SeriesId[];
+  /** Sets the axis unit, the tick spacing and the tooltip's time format. */
+  timeframe?: TimeframeId;
 }) {
+  const frame = FRAMES[timeframe];
   const data: Point[] = readings.map((r) => ({
     t: new Date(r.interval_start).getTime(),
     import_kwh: toNumber(r.import_kwh),
@@ -46,13 +100,11 @@ export default function ReadingsChart({
     generation_kwh: toNumber(r.generation_kwh),
   }));
 
-  // One tick per midnight, so the axis reads as days rather than as an
-  // arbitrary sampling of timestamps.
-  const dayTicks = data
-    .filter((p) => {
-      const d = new Date(p.t);
-      return d.getHours() === 0 && d.getMinutes() === 0;
-    })
+  // Labelled points, so the axis reads as time rather than as an arbitrary
+  // sampling of timestamps. Which points those are depends on the bucket --
+  // see FRAMES.
+  const ticks = data
+    .filter((p, i) => frame.tick(new Date(p.t), i))
     .map((p) => p.t);
 
   return (
@@ -74,12 +126,9 @@ export default function ReadingsChart({
             type="number"
             scale="time"
             domain={["dataMin", "dataMax"]}
-            ticks={dayTicks}
+            ticks={ticks}
             tickFormatter={(t: number) =>
-              new Date(t).toLocaleDateString(undefined, {
-                day: "numeric",
-                month: "short",
-              })
+              new Date(t).toLocaleString(undefined, frame.label)
             }
             tick={{ fill: CHART_INK.muted, fontSize: 11 }}
             tickLine={false}
@@ -93,7 +142,7 @@ export default function ReadingsChart({
             axisLine={false}
             tickFormatter={(v: number) => v.toFixed(1)}
             label={{
-              value: "kWh / 30 min",
+              value: frame.unit,
               angle: -90,
               position: "insideLeft",
               style: { fill: CHART_INK.muted, fontSize: 11 },
@@ -104,7 +153,7 @@ export default function ReadingsChart({
             // The crosshair finds the X; the reader aims at a time, never at a
             // 2px line, and gets every series at that instant in one readout.
             cursor={{ stroke: CHART_INK.axis, strokeWidth: 1 }}
-            content={<ReadingTooltip series={series} />}
+            content={<ReadingTooltip series={series} format={frame.tip} />}
           />
 
           {series.map((id) => (
@@ -117,8 +166,10 @@ export default function ReadingsChart({
               strokeWidth={2}
               strokeLinecap="round"
               strokeLinejoin="round"
-              // 336 points per series: a dot on each would be a solid band.
-              dot={false}
+              // 336 points per series on the week frame: a dot on each would
+              // be a solid band. On the year frame there are twelve, and a
+              // line with no marks reads as a trend rather than as readings.
+              dot={data.length <= 40}
               activeDot={{
                 r: 4,
                 strokeWidth: 2,
@@ -188,6 +239,8 @@ interface TooltipProps {
   active?: boolean;
   label?: number;
   series: SeriesId[];
+  /** Matched to the bucket: a monthly total labelled 00:00 is a lie. */
+  format?: Intl.DateTimeFormatOptions;
   payload?: { dataKey: string; value: number }[];
 }
 
@@ -198,7 +251,13 @@ interface TooltipProps {
  * The reader already knows which series they care about -- they want the
  * number.
  */
-function ReadingTooltip({ active, label, payload, series }: TooltipProps) {
+function ReadingTooltip({
+  active,
+  label,
+  payload,
+  series,
+  format,
+}: TooltipProps) {
   if (!active || !payload?.length || label == null) return null;
 
   const byKey = new Map(payload.map((p) => [p.dataKey, p.value]));
@@ -206,12 +265,7 @@ function ReadingTooltip({ active, label, payload, series }: TooltipProps) {
   return (
     <div className="rounded-lg border border-hairline bg-surface px-3 py-2 shadow-md">
       <p className="text-xs text-ink-muted">
-        {new Date(label).toLocaleString(undefined, {
-          day: "numeric",
-          month: "short",
-          hour: "2-digit",
-          minute: "2-digit",
-        })}
+        {new Date(label).toLocaleString(undefined, format)}
       </p>
       <ul className="mt-1.5 space-y-1">
         {series.map((id) => (

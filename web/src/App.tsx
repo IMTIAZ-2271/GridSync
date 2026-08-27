@@ -11,7 +11,7 @@ import CustomerDevices from "./routes/CustomerDevices";
 import CustomerMeters from "./routes/CustomerMeters";
 import CustomerIssues from "./routes/CustomerIssues";
 import CustomerSettings from "./routes/CustomerSettings";
-import CustomerSolar from "./routes/CustomerSolar";
+import CustomerApplications from "./routes/CustomerApplications";
 import CustomerVisits from "./routes/CustomerVisits";
 import WorkerOrders from "./routes/WorkerOrders";
 import WorkerIssues from "./routes/WorkerIssues";
@@ -19,6 +19,7 @@ import GovernmentByArea from "./routes/GovernmentByArea";
 import GovernmentAgreements from "./routes/GovernmentAgreements";
 import GovernmentNetMetering from "./routes/GovernmentNetMetering";
 import GovernmentWorkers from "./routes/GovernmentWorkers";
+import GovernmentMeterApplications from "./routes/GovernmentMeterApplications";
 import SupplierSites from "./routes/SupplierSites";
 import SupplierApplications from "./routes/SupplierApplications";
 import SupplierDispatch from "./routes/SupplierDispatch";
@@ -55,7 +56,13 @@ export default function App() {
             <Route path="meters" element={<CustomerMeters />} />
             <Route path="devices" element={<CustomerDevices />} />
             <Route path="issues" element={<CustomerIssues />} />
-            <Route path="solar" element={<CustomerSolar />} />
+            <Route path="applications" element={<CustomerApplications />} />
+            {/* The tab was called "Solar" until 2026-08-27. Kept as a
+                redirect so a bookmark still lands somewhere. */}
+            <Route
+              path="solar"
+              element={<Navigate to="/customer/applications" replace />}
+            />
             <Route path="visits" element={<CustomerVisits />} />
             <Route path="settings" element={<CustomerSettings />} />
           </Route>
@@ -70,6 +77,10 @@ export default function App() {
             <Route path="agreements" element={<GovernmentAgreements />} />
             <Route path="net-metering" element={<GovernmentNetMetering />} />
             <Route path="workers" element={<GovernmentWorkers />} />
+            <Route
+              path="meter-applications"
+              element={<GovernmentMeterApplications />}
+            />
           </Route>
 
           <Route path="supplier">

@@ -51,6 +51,15 @@ class WorkOrder(BaseModel):
     completed_at: datetime | None
     completion_notes: str | None
     failure_reason: str | None
+    # What this visit exists to fulfil, when it is not a complaint.
+    meter_application_id: UUID | None = None
+    agreement_id: UUID | None = None
+    # The serial the technician recorded at the property. Not a device_id --
+    # the device row does not exist until the household installs the meter.
+    installed_serial_no: str | None = None
+    consumer_confirmed_at: datetime | None = None
+    consumer_disputed_at: datetime | None = None
+    consumer_note: str | None = None
     created_at: datetime
     assignments: list[Assignment]
 
@@ -63,6 +72,20 @@ WorkOrderStatus = Literal[
 
 class WorkOrderStatusUpdate(BaseModel):
     status: WorkOrderStatus
+    # Recorded when a meter install or swap is completed. The technician is the
+    # person holding the meter, so this is where its serial enters the system;
+    # the official's registration step reads it back rather than typing a
+    # number for hardware they never saw.
+    installed_serial_no: str | None = Field(default=None, max_length=64)
+    completion_notes: str | None = Field(default=None, max_length=2000)
+    failure_reason: str | None = Field(default=None, max_length=2000)
+
+
+class WorkOrderVerdict(BaseModel):
+    """The household's answer to "did this actually happen?"."""
+
+    confirmed: bool
+    note: str | None = Field(default=None, max_length=2000)
 
 
 def _work_order(row: asyncpg.Record) -> WorkOrder:
@@ -123,8 +146,33 @@ async def update_work_order_status(
             if not assigned:
                 raise HTTPException(status_code=404, detail="work order not found")
 
+        # A meter install or swap that is complete but nameless cannot be
+        # registered -- the official has nothing to issue. Refused here rather
+        # than discovered three steps later by an official staring at a blank
+        # serial, and only for the order types that fit hardware.
+        origin = await conn.fetchrow(sql("work_order_origin"), order_id)
+        if origin is None:
+            raise HTTPException(status_code=404, detail="work order not found")
+        fits_a_meter = origin["order_type"] in ("meter_install", "meter_swap")
+        serial = (payload.installed_serial_no or "").strip()
+        if (
+            payload.status == "completed"
+            and fits_a_meter
+            and not serial
+            and not origin["installed_serial_no"]
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "record the serial of the meter you fitted before marking "
+                    "this order complete"
+                ),
+            )
+
         updated = await conn.fetchval(
-            sql("update_work_order_status"), order_id, payload.status
+            sql("update_work_order_status"),
+            order_id, payload.status, serial or None,
+            payload.completion_notes, payload.failure_reason,
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="work order not found")
@@ -133,7 +181,50 @@ async def update_work_order_status(
         # Inside the transaction: if the status update rolls back, so does the
         # notification claiming it happened.
         await _notify_household(conn, row, payload.status)
+        await _notify_officials(conn, origin, payload.status)
     return _work_order(row)
+
+
+async def _notify_officials(
+    conn: asyncpg.Connection, origin: asyncpg.Record, status: str
+) -> None:
+    """Tell the district's officials when an application-driven visit fails.
+
+    Only for failure, and only for the two flows an official actually owns. A
+    regulator does not want a phone buzzing for every technician who starts a
+    job; what they need to know is that a visit they ordered came back unable
+    to finish, because the household is now waiting on them to decide whether
+    to send someone again or refuse the application.
+    """
+    if status != "failed":
+        return
+    if origin["meter_application_id"] is None and origin["agreement_id"] is None:
+        return
+
+    what = (
+        "meter installation"
+        if origin["meter_application_id"] is not None
+        else "net-metering inspection"
+    )
+    for official in await conn.fetch(
+        sql("officials_for_district"), origin["district"]
+    ):
+        await notify(
+            conn,
+            official["account_id"],
+            "work_order_failed",
+            f"A {what} could not be completed",
+            body=(
+                f"The visit to {origin['site_label']} was marked failed"
+                + (f": {origin['failure_reason']}" if origin["failure_reason"] else ".")
+                + " The application is still open -- send another crew or "
+                "refuse it."
+            ),
+            severity="warning",
+            entity_type="work_order",
+            entity_id=str(origin["order_id"]),
+            dedupe_key=f"wo:{origin['order_id']}:failed:official",
+        )
 
 
 # Which transitions the household hears about, and what they are told. Not
@@ -161,6 +252,24 @@ _HOUSEHOLD_UPDATES: dict[str, tuple[str, str, str]] = {
 }
 
 
+# What a completed visit means depends on why it happened. A complaint visit
+# asks whether the fault is gone; an install or a swap asks whether the meter
+# is on the wall -- and the household's answer is what unlocks registration, so
+# the message has to name the act they are being asked to perform.
+_FULFILMENT_COMPLETE: dict[str, str] = {
+    "meter_install": (
+        "Your new meter has been fitted at {site}. Confirm the installation "
+        "and your district office will register it to you -- you can then add "
+        "it to a connection."
+    ),
+    "meter_swap": (
+        "Your export-capable meter has been fitted at {site}. Confirm the "
+        "installation and your district office will register it and approve "
+        "your net metering."
+    ),
+}
+
+
 async def _notify_household(
     conn: asyncpg.Connection, order: asyncpg.Record, status: str
 ) -> None:
@@ -168,6 +277,19 @@ async def _notify_household(
     if update is None:
         return
     kind, severity, body = update
+
+    fulfils_application = (
+        order["meter_application_id"] is not None
+        or order["agreement_id"] is not None
+    )
+    if status == "completed" and fulfils_application:
+        body = _FULFILMENT_COMPLETE.get(order["order_type"], body)
+    elif status == "failed" and fulfils_application:
+        body = (
+            "The visit to {site} could not be completed. Your district office "
+            "has been told and will decide whether to send another crew. "
+            "Check the Applications page for what to do next."
+        )
 
     # Keyed on the order and the status, not on the moment: the API has no
     # state machine, so a dispatcher correcting a mistake can walk an order
@@ -251,6 +373,85 @@ async def _assignment_state(
 
 
 @router.post(
+    "/api/work-orders/{order_id}/confirmation",
+    response_model=WorkOrder,
+)
+async def confirm_work_order(
+    conn: Conn,
+    order_id: UUID,
+    payload: WorkOrderVerdict,
+    principal: Annotated[Principal, Depends(require_role("consumer"))],
+) -> WorkOrder:
+    """The household's verdict on a completed visit.
+
+    Consumer-only, and that is the point: the confirmation is the evidence a
+    meter is actually on the wall, and it is what an official's registration
+    step is guarded on. An endpoint another role could call would let the
+    utility attest to its own work.
+
+    A visit that is not complete cannot be confirmed, and one on somebody
+    else's site is a 404 -- both live in `set_order_verdict`'s WHERE clause
+    rather than in a check before it, so there is no window between the two.
+
+    Disputing does not reopen anything by itself. The order stays `completed`
+    and the district office is told; whether that means another crew or a
+    refusal is a decision, and this endpoint does not get to make it.
+    """
+    async with conn.transaction():
+        verdict = await conn.fetchrow(
+            sql("set_order_verdict"),
+            order_id, principal.account_id, payload.confirmed, payload.note,
+        )
+        if verdict is None:
+            raise HTTPException(
+                status_code=404,
+                detail="no completed work order of yours with that id",
+            )
+
+        origin = await conn.fetchrow(sql("work_order_origin"), order_id)
+        fulfils = (
+            origin["meter_application_id"] is not None
+            or origin["agreement_id"] is not None
+        )
+        if fulfils:
+            what = (
+                "Meter installation"
+                if origin["meter_application_id"] is not None
+                else "Net-metering inspection"
+            )
+            confirmed = payload.confirmed
+            for official in await conn.fetch(
+                sql("officials_for_district"), origin["district"]
+            ):
+                await notify(
+                    conn,
+                    official["account_id"],
+                    "meter_application",
+                    f"{what} {'confirmed' if confirmed else 'disputed'} by the "
+                    "household",
+                    body=(
+                        f"{origin['site_label']}: the household confirms the "
+                        f"work is done. Register meter "
+                        f"{origin['installed_serial_no']} to them."
+                        if confirmed else
+                        f"{origin['site_label']}: the household says the work "
+                        "is not done."
+                        + (f" They said: {payload.note}" if payload.note else "")
+                    ),
+                    severity="info" if confirmed else "warning",
+                    entity_type="work_order",
+                    entity_id=str(order_id),
+                    dedupe_key=(
+                        f"wo:{order_id}:"
+                        f"{'confirmed' if confirmed else 'disputed'}"
+                    ),
+                )
+
+        row = await conn.fetchrow(sql("get_work_order"), order_id)
+    return _work_order(row)
+
+
+@router.post(
     "/api/work-orders/{order_id}/assignments",
     response_model=AssignmentState,
     status_code=201,
@@ -259,13 +460,22 @@ async def offer_assignment(
     conn: Conn,
     order_id: UUID,
     payload: AssignmentOffer,
-    principal: Annotated[Principal, Depends(require_role("supplier", "admin"))],
+    principal: Annotated[
+        Principal, Depends(require_role("government", "supplier", "admin"))
+    ],
 ) -> AssignmentState:
     """Offer a work order to a worker, with a three-hour clock on it.
 
     Consumer is excluded for the obvious reason and worker for a less obvious
     one: a technician may answer an offer but may not hand themselves a job,
     because the queue is the dispatcher's to balance.
+
+    **Government may offer, but only on the orders it raised.** An official
+    fitting the utility's billing meter is not the same act as a private
+    installer visiting about a complaint, and decision 4 keeps those two
+    organisations separate -- so a regulator dispatching a supplier's
+    complaint visit would be reaching across that line. The check is on the
+    order's origin, below, not on the role alone.
 
     A worker who is not approved, has left, or is marked unavailable is refused
     here rather than left to hold the offer until it expires. Their approval
@@ -281,6 +491,17 @@ async def offer_assignment(
                 status_code=409,
                 detail=f"a {order['status']} work order cannot be assigned",
             )
+        if principal.role == "government":
+            fulfils_application = (
+                order["meter_application_id"] is not None
+                or order["agreement_id"] is not None
+            )
+            if not fulfils_application:
+                # 404, not 403: the order exists, but saying so would tell an
+                # official which complaints a supplier is working.
+                raise HTTPException(
+                    status_code=404, detail="work order not found"
+                )
 
         worker = await conn.fetchrow(sql("offerable_worker"), payload.account_id)
         if worker is None:

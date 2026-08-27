@@ -18,6 +18,16 @@ SELECT w.order_id,
        w.completed_at,
        w.completion_notes,
        w.failure_reason,
+       -- Which application this visit fulfils, what the technician fitted, and
+       -- what the household said about it (migration b7d3f5a92c14). Projected
+       -- on both aggregates because the worker's queue and the official's read
+       -- the same shape and must not disagree about what a visit recorded.
+       w.meter_application_id,
+       w.agreement_id,
+       w.installed_serial_no,
+       w.consumer_confirmed_at,
+       w.consumer_disputed_at,
+       w.consumer_note,
        w.created_at,
        COALESCE(
            json_agg(
@@ -62,6 +72,16 @@ SELECT w.order_id,
        w.completed_at,
        w.completion_notes,
        w.failure_reason,
+       -- Which application this visit fulfils, what the technician fitted, and
+       -- what the household said about it (migration b7d3f5a92c14). Projected
+       -- on both aggregates because the worker's queue and the official's read
+       -- the same shape and must not disagree about what a visit recorded.
+       w.meter_application_id,
+       w.agreement_id,
+       w.installed_serial_no,
+       w.consumer_confirmed_at,
+       w.consumer_disputed_at,
+       w.consumer_note,
        w.created_at,
        COALESCE(
            json_agg(
@@ -96,8 +116,21 @@ GROUP BY w.order_id, s.label, s.district;
 -- so a dispatcher clicking a status button cannot leave an order 'completed'
 -- with a NULL completed_at. Both are set once and never rewritten -- moving
 -- back to an earlier status does not erase the fact that work started.
+--
+-- $3 is the serial of the meter actually fitted, recorded by the technician at
+-- the property (migration b7d3f5a92c14). COALESCE, not assignment: walking an
+-- order back through 'completed' a second time with the field blank must not
+-- erase the number, because the official's registration step reads it and
+-- nobody else ever saw the hardware.
+--
+-- $4/$5 carry the completion note and the failure reason. Same treatment, same
+-- reason -- a status corrected by a dispatcher should not blank what the
+-- worker wrote.
 UPDATE work_order
 SET status = $2::work_order_status,
+    installed_serial_no = COALESCE(nullif(btrim($3), ''), installed_serial_no),
+    completion_notes = COALESCE(nullif(btrim($4), ''), completion_notes),
+    failure_reason = COALESCE(nullif(btrim($5), ''), failure_reason),
     started_at = CASE
         WHEN started_at IS NULL
          AND $2::work_order_status IN ('in_progress', 'completed', 'failed')
@@ -112,6 +145,54 @@ SET status = $2::work_order_status,
     END
 WHERE order_id = $1
 RETURNING order_id;
+
+
+-- name: set_order_verdict
+-- The household's verdict on a visit.
+--
+-- Guarded on the order being completed and on the caller owning the site, both
+-- in the WHERE clause rather than checked first: there is then no window
+-- between the check and the write, and an order on somebody else's site is
+-- indistinguishable from one that does not exist.
+--
+-- Only one verdict is ever recorded. `order_one_verdict` forbids holding both,
+-- and re-confirming is idempotent rather than an error -- a second click on a
+-- slow connection is not a thing to punish.
+UPDATE work_order wo
+SET consumer_confirmed_at = CASE WHEN $3 THEN now() ELSE NULL END,
+    consumer_disputed_at  = CASE WHEN $3 THEN NULL ELSE now() END,
+    consumer_note = COALESCE(nullif(btrim($4), ''), wo.consumer_note)
+FROM site s
+WHERE s.site_id = wo.site_id
+  AND wo.order_id = $1
+  AND s.account_id = $2
+  AND wo.status = 'completed'
+RETURNING wo.order_id, wo.site_id, wo.meter_application_id, wo.agreement_id;
+
+
+-- name: work_order_origin
+-- What a visit exists to fulfil, and who cares about the outcome.
+--
+-- One statement rather than three lookups: the failure path has to reach the
+-- district's officials AND the household, and both are one join away from the
+-- order through whichever origin it carries.
+SELECT wo.order_id,
+       wo.status,
+       wo.order_type,
+       wo.meter_application_id,
+       wo.agreement_id,
+       wo.issue_id,
+       wo.site_id,
+       wo.installed_serial_no,
+       wo.failure_reason,
+       wo.consumer_confirmed_at,
+       s.account_id AS owner_account_id,
+       s.district,
+       s.label AS site_label,
+       wo.created_by_account_id
+FROM work_order wo
+JOIN site s ON s.site_id = wo.site_id
+WHERE wo.order_id = $1;
 
 
 -- name: create_work_order

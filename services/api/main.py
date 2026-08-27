@@ -47,6 +47,7 @@ from .routes_auth import router as auth_router
 from .orgs import router as orgs_router
 from .routes_devices import router as devices_router
 from .routes_issues import router as issues_router
+from .routes_meters import router as meters_router
 from .routes_notifications import router as notifications_router
 from .routes_ratings import router as ratings_router
 from .routes_sites import router as sites_router
@@ -95,6 +96,7 @@ app.include_router(auth_router)
 app.include_router(orgs_router)
 app.include_router(sites_router)
 app.include_router(devices_router)
+app.include_router(meters_router)
 app.include_router(issues_router)
 app.include_router(notifications_router)
 app.include_router(ratings_router)

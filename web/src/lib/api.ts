@@ -649,9 +649,31 @@ export interface WorkOrder {
   completed_at: Timestamp | null;
   completion_notes: string | null;
   failure_reason: string | null;
+  /** Which application this visit fulfils, when it is not a complaint. */
+  meter_application_id: string | null;
+  agreement_id: string | null;
+  /** The serial the technician recorded. Required to complete an install. */
+  installed_serial_no: string | null;
+  consumer_confirmed_at: Timestamp | null;
+  consumer_disputed_at: Timestamp | null;
+  consumer_note: string | null;
   created_at: Timestamp;
   /** A job can need more than one person; empty array if unassigned. */
   assignments: Assignment[];
+}
+
+/**
+ * What a worker records alongside a status change.
+ *
+ * `installed_serial_no` is required by the API to complete a `meter_install`
+ * or `meter_swap`: the technician is the only person who sees the meter, and
+ * the official's registration step reads this back rather than inventing a
+ * number.
+ */
+export interface WorkOrderCompletion {
+  installed_serial_no?: string | null;
+  completion_notes?: string | null;
+  failure_reason?: string | null;
 }
 
 export type SettlementType = "rollover_only" | "annual_cashout" | "net_billing";
@@ -905,20 +927,173 @@ export interface BillingPoint {
   has_solar: boolean;
 }
 
-export interface MeterRegisterBody {
+/**
+ * Timeframes the readings chart offers. The window and the bucket size are one
+ * choice, decided server-side -- see site_readings in
+ * db/sql/dao/site_queries.sql. A year of half-hourly points is a smear and a
+ * day of monthly buckets is one bar, so there is no combination worth exposing.
+ */
+export type TimeframeId = "day" | "week" | "month" | "year";
+
+/** One meter the utility issued to this household. */
+export interface MeterAsset {
+  meter_asset_id: string;
   serial_no: string;
-  manufacturer: string;
-  model: string;
+  manufacturer: string | null;
+  model: string | null;
+  issued_at: Timestamp;
+  issued_by: string | null;
+  /** True while it is not installed anywhere -- the assignable ones. */
+  available: boolean;
+  /** Where it went. All five are null together while it is available. */
+  device_id: string | null;
+  site_id: string | null;
+  site_label: string | null;
+  point_id: string | null;
+  point_label: string | null;
+  removed_at: Timestamp | null;
+}
+
+/**
+ * The visit that fulfils an application.
+ *
+ * Since 2026-08-27 neither a meter nor a net-metering agreement is granted on
+ * a click: an official raises a work order, a worker does it and records the
+ * serial, and the household confirms it happened. This is that order, flattened
+ * onto the application so the page does not have to fetch one per card.
+ */
+export interface ApplicationVisit {
+  order_id: string;
+  order_type: string;
+  status: WorkOrderStatus;
+  scheduled_for: Timestamp | null;
+  started_at: Timestamp | null;
+  completed_at: Timestamp | null;
+  completion_notes: string | null;
+  failure_reason: string | null;
+  /** Recorded by the technician at the property. */
+  installed_serial_no: string | null;
+  consumer_confirmed_at: Timestamp | null;
+  consumer_disputed_at: Timestamp | null;
+  consumer_note: string | null;
+}
+
+export interface MeterApplicationBody {
+  site_id: string;
+  reason?: string | null;
+}
+
+/** A request for a meter, as the household sees it. */
+export interface MeterApplication {
+  application_id: string;
+  site_id: string;
+  site_label: string;
+  district: string;
+  status: ApplicationStatus;
+  reason: string | null;
+  submitted_at: Timestamp;
+  decided_at: Timestamp | null;
+  decision_notes: string | null;
+  issued_meter_asset_id: string | null;
+  issued_serial_no: string | null;
+  /** False once they have assigned the meter that was issued to them. */
+  issued_meter_available: boolean | null;
+  /** The installation visit. Null until an official orders one. */
+  visit: ApplicationVisit | null;
+}
+
+/** The official's view. Carries the applicant, which the consumer's does not. */
+export interface MeterApplicationQueueRow {
+  application_id: string;
+  account_id: string;
+  account_name: string;
+  national_id: string | null;
+  phone: string | null;
+  site_id: string;
+  site_label: string;
+  address_line: string;
+  district: string;
+  status: ApplicationStatus;
+  reason: string | null;
+  submitted_at: Timestamp;
+  decided_at: Timestamp | null;
+  decision_notes: string | null;
+  issued_meter_asset_id: string | null;
+  issued_serial_no: string | null;
+  /** Meters the site already has -- a first connection and a fourth are not
+   * the same request. */
+  existing_meters: number;
+}
+
+export interface MeterRegistrationBody {
+  /** No serial: it is read off the work order, where the technician put it. */
+  manufacturer?: string | null;
+  model?: string | null;
+  notes?: string | null;
+}
+
+export interface MeterApplicationDecision {
+  status: "under_review" | "accepted" | "rejected" | "withdrawn";
+  decision_notes?: string | null;
+  /** Read only on acceptance; one is minted when the utility has no serial. */
+  serial_no?: string | null;
+  manufacturer?: string | null;
+  model?: string | null;
+}
+
+/**
+ * A net-metering agreement seen from the household's side. Applying for one
+ * and holding one are the same row at different statuses -- 'pending' is the
+ * application, 'active' is the agreement.
+ */
+export interface NetMeteringApplication {
+  agreement_id: string;
+  site_id: string;
+  site_label: string;
+  billing_point_id: string;
+  point_label: string;
+  approval_ref: string;
+  sanctioned_capacity_kw: Decimal;
+  export_cap_pct: Decimal;
+  settlement_type: string;
+  credit_rollover_months: number | null;
+  effective_from: DateOnly;
+  effective_to: DateOnly | null;
+  status: string;
+  created_at: Timestamp;
+  /** Panels on this connection. Zero means there is nothing to credit yet. */
+  array_count: number;
+  /** The inspection-and-swap visit. Null until an official orders one. */
+  visit: ApplicationVisit | null;
+}
+
+export interface MeterRegisterBody {
+  /**
+   * Which of the household's own meters to install. There is no serial field:
+   * a meter is hardware the utility issued, and the consumer picks one that is
+   * theirs and unassigned (`GET /api/meter-assets`). With none available they
+   * apply -- `POST /api/meter-applications`.
+   */
+  meter_asset_id: string;
   /** An existing connection to meter. Omit during onboarding. */
   point_id?: string;
   /** Opens a new connection under this name instead. */
   point_label?: string;
   point_reference?: string;
+  /**
+   * Retire the meter already on this connection and take its place. This is
+   * how a net-metering approval ends: rule 7 allows one billing meter per
+   * connection, so the bidirectional replacement swaps for the old one. The
+   * connection keeps its periods, bills, credit balance and reading history.
+   */
+  replace_existing?: boolean;
 }
 
 export interface MeterRegisterResult {
   device_id: string;
   serial_no: string;
+  /** Set when this install replaced a meter. Its readings stay on the point. */
+  replaced_serial_no?: string | null;
   point_id: string;
   point_label: string;
   point_reference: string | null;
@@ -941,10 +1116,7 @@ export interface SolarRegisterBody {
 export interface SolarRegisterResult {
   inverter_device_id: string;
   array_id: string;
-  agreement_id: string;
   point_id: string;
-  /** False when this array joined the agreement already covering the point. */
-  agreement_created: boolean;
   /** Arrays now on this connection, and their combined AC capacity -- this one included. */
   array_count: number;
   point_capacity_kw: Decimal;
@@ -1126,11 +1298,90 @@ export const api = {
   billSite: (siteId: string) =>
     request<BillingRunResult[]>(`/sites/${siteId}/bill`, { method: "POST" }),
 
-  siteSummary: (siteId: string) =>
-    request<SiteSummary>(`/sites/${siteId}/summary`),
+  siteSummary: (siteId: string, pointId?: string | null) =>
+    request<SiteSummary>(
+      `/sites/${siteId}/summary${pointId ? `?point_id=${pointId}` : ""}`,
+    ),
 
-  siteReadings: (siteId: string, days = 7) =>
-    request<Reading[]>(`/sites/${siteId}/readings?days=${days}`),
+  siteReadings: (
+    siteId: string,
+    timeframe: TimeframeId = "week",
+    pointId?: string | null,
+  ) =>
+    request<Reading[]>(
+      `/sites/${siteId}/readings?timeframe=${timeframe}` +
+        (pointId ? `&point_id=${pointId}` : ""),
+    ),
+
+  // Meters the utility issued to the signed-in household.
+  meterAssets: () => request<MeterAsset[]>("/meter-assets"),
+
+  meterApplications: () => request<MeterApplication[]>("/meter-applications"),
+
+  applyForMeter: (body: MeterApplicationBody) =>
+    request<MeterApplication>("/meter-applications", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  meterApplicationQueue: (includeDecided = false) =>
+    request<MeterApplicationQueueRow[]>(
+      `/meter-applications/queue?include_decided=${includeDecided}`,
+    ),
+
+  decideMeterApplication: (id: string, body: MeterApplicationDecision) =>
+    request<MeterApplication>(`/meter-applications/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  // The official orders the installation rather than granting the meter.
+  raiseMeterWorkOrder: (id: string, scheduledFor?: string | null) =>
+    request<{ order_id: string; site_id: string }>(
+      `/meter-applications/${id}/work-order`,
+      { method: "POST", body: JSON.stringify({ scheduled_for: scheduledFor ?? null }) },
+    ),
+
+  // Guarded server-side on a completed visit the household confirmed.
+  registerAppliedMeter: (id: string, body: MeterRegistrationBody = {}) =>
+    request<MeterApplication>(`/meter-applications/${id}/register`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  raiseAgreementWorkOrder: (id: string, scheduledFor?: string | null) =>
+    request<{ order_id: string; site_id: string }>(
+      `/agreements/${id}/work-order`,
+      { method: "POST", body: JSON.stringify({ scheduled_for: scheduledFor ?? null }) },
+    ),
+
+  registerAgreementMeter: (id: string, body: MeterRegistrationBody = {}) =>
+    request<NetMeteringApplication>(`/agreements/${id}/register`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** The household's verdict on a completed visit. Consumer-only. */
+  confirmWorkOrder: (orderId: string, confirmed: boolean, note?: string | null) =>
+    request<WorkOrder>(`/work-orders/${orderId}/confirmation`, {
+      method: "POST",
+      body: JSON.stringify({ confirmed, note: note ?? null }),
+    }),
+
+  netMeteringApplications: () =>
+    request<NetMeteringApplication[]>("/net-metering-applications"),
+
+  applyForNetMetering: (billingPointId: string) =>
+    request<NetMeteringApplication>("/net-metering-applications", {
+      method: "POST",
+      body: JSON.stringify({ billing_point_id: billingPointId }),
+    }),
+
+  withdrawNetMeteringApplication: (agreementId: string) =>
+    request<NetMeteringApplication>(
+      `/net-metering-applications/${agreementId}`,
+      { method: "DELETE" },
+    ),
 
   consumptionLimit: (siteId: string) =>
     request<ConsumptionLimit>(`/sites/${siteId}/consumption-limit`),
@@ -1250,10 +1501,14 @@ export const api = {
       body: JSON.stringify({ decision, reason: reason ?? null }),
     }),
 
-  updateWorkOrderStatus: (orderId: string, status: WorkOrderStatus) =>
+  updateWorkOrderStatus: (
+    orderId: string,
+    status: WorkOrderStatus,
+    extra: WorkOrderCompletion = {},
+  ) =>
     request<WorkOrder>(`/work-orders/${orderId}/status`, {
       method: "PATCH",
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, ...extra }),
     }),
 
   pendingAgreements: () => request<Agreement[]>("/agreements/pending"),
@@ -1285,9 +1540,10 @@ export const queryKeys = {
   districts: () => ["districts"] as const,
   tariffPlans: (connectionType?: ConnectionType) =>
     ["tariff-plans", connectionType ?? "any"] as const,
-  siteSummary: (id: string) => ["sites", id, "summary"] as const,
-  siteReadings: (id: string, days: number) =>
-    ["sites", id, "readings", days] as const,
+  siteSummary: (id: string, pointId?: string | null) =>
+    ["sites", id, "summary", pointId ?? "all"] as const,
+  siteReadings: (id: string, timeframe: string, pointId?: string | null) =>
+    ["sites", id, "readings", timeframe, pointId ?? "all"] as const,
   siteBills: (id: string) => ["sites", id, "bills"] as const,
   siteDevices: (id: string) => ["sites", id, "devices"] as const,
   siteArrays: (id: string) => ["sites", id, "arrays"] as const,
@@ -1308,6 +1564,11 @@ export const queryKeys = {
   assignableWorkers: (district?: string) =>
     ["workers", district ?? "all"] as const,
   pendingAgreements: () => ["agreements", "pending"] as const,
+  meterAssets: () => ["meter-assets"] as const,
+  meterApplications: () => ["meter-applications"] as const,
+  meterApplicationQueue: (includeDecided: boolean) =>
+    ["meter-applications", "queue", includeDecided] as const,
+  netMeteringApplications: () => ["net-metering-applications"] as const,
   pendingWorkers: () => ["workers", "pending"] as const,
   analyticsByArea: (district?: string) =>
     ["analytics", "by-area", district ?? "all"] as const,

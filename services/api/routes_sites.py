@@ -181,15 +181,22 @@ class SiteClaim(BaseModel):
 
 
 class MeterRegister(BaseModel):
-    serial_no: str = Field(min_length=1, max_length=100)
-    manufacturer: str = Field(min_length=1, max_length=100)
-    model: str = Field(min_length=1, max_length=100)
+    # Which of the household's own meters to install. There is no serial field
+    # any more: a meter is hardware the utility issued (migration
+    # c9e2f4a71b83), and typing a number at a form let a consumer conjure
+    # hardware nobody owns. If they have none available they apply for one --
+    # POST /api/meter-applications.
+    meter_asset_id: UUID
     # The connection this meter serves. Omitted during onboarding, where the
     # site's first (empty) point is used; supplied when a household adds a
     # second billing meter and wants to name it.
     point_id: UUID | None = None
     point_label: str | None = Field(default=None, min_length=1, max_length=80)
     point_reference: str | None = Field(default=None, max_length=80)
+    # Retire the meter currently serving this connection and take its place.
+    # This is what a net-metering approval ends in: the connection already has
+    # a billing meter, rule 7 allows one, and the replacement is bidirectional.
+    replace_existing: bool = False
 
 
 class MeterRegisterOut(BaseModel):
@@ -201,6 +208,9 @@ class MeterRegisterOut(BaseModel):
     backfill_from: date
     backfill_to: date
     readings_backfilled: int
+    # The meter this one replaced, when it replaced one. Its readings stay on
+    # the connection -- only the device is retired.
+    replaced_serial_no: str | None = None
 
 
 class SolarRegister(BaseModel):
@@ -219,11 +229,7 @@ class SolarRegister(BaseModel):
 class SolarRegisterOut(BaseModel):
     inverter_device_id: UUID
     array_id: UUID
-    agreement_id: UUID
     point_id: UUID
-    # False when this array joined the agreement already covering the point
-    # rather than opening a new one -- see the handler.
-    agreement_created: bool
     # Arrays now live on this billing point, and their combined AC capacity.
     # Both count the array just added.
     array_count: int
@@ -383,9 +389,24 @@ async def site_summary(
         Principal,
         Depends(require_role("consumer", "government", "supplier", "admin")),
     ],
+    point_id: Annotated[
+        UUID | None,
+        Query(description="Narrow every figure to one billing point"),
+    ] = None,
 ) -> SiteSummary:
+    """The three headline figures, for the whole site or for one connection.
+
+    `point_id` is consumer requirement 5: once a household picks a meter, the
+    credit balance, the latest bill and the 30-day window are all that meter's.
+    A balance summed across connections they did not select is a number that
+    belongs to nothing else on the screen.
+
+    An unknown or foreign point is not an error -- the scoped subqueries simply
+    match nothing and the site reports zeros. The point still has to be on a
+    site this caller may read, which `visible_site_or_404` has already settled.
+    """
     await visible_site_or_404(conn, principal, site_id)
-    row = await conn.fetchrow(sql("site_summary"), site_id)
+    row = await conn.fetchrow(sql("site_summary"), site_id, point_id)
     if row is None:
         raise HTTPException(status_code=404, detail="site not found")
 
@@ -438,12 +459,26 @@ async def site_readings(
     conn: Conn,
     site_id: UUID,
     principal: CurrentAccount,
-    days: Annotated[int, Query(ge=1, le=90, description="Trailing window in days")] = 7,
+    timeframe: Annotated[
+        Literal["day", "week", "month", "year"],
+        Query(description="Window and bucket size, chosen together"),
+    ] = "week",
+    point_id: Annotated[
+        UUID | None, Query(description="Narrow to one billing point")
+    ] = None,
 ) -> list[Reading]:
-    # Workers may read telemetry for a site they are dispatched to -- a data
-    # gap or a dead inverter is diagnosed from exactly this series.
+    """The chart series.
+
+    `timeframe` picks the window and the bucket as one choice, in SQL -- see
+    site_readings in db/sql/dao/site_queries.sql. They cannot be chosen
+    independently: a year of half-hourly points is a smear and a day of monthly
+    buckets is one bar, so there is no combination worth exposing.
+
+    Workers may read this for a site they are dispatched to -- a data gap or a
+    dead inverter is diagnosed from exactly this series.
+    """
     await visible_site_or_404(conn, principal, site_id)
-    rows = await conn.fetch(sql("site_readings"), site_id, days)
+    rows = await conn.fetch(sql("site_readings"), site_id, timeframe, point_id)
     return [Reading(**dict(r)) for r in rows]
 
 
@@ -502,7 +537,9 @@ async def claim_site(
     not builds a new site instead.
 
     The site is transferred rather than copied: everything the portal shows is
-    keyed on site_id, so readings, bills, credit and issues all come across.
+    keyed on site_id, so readings, bills, credit and issues all come across --
+    and so do the meters, which are keyed on the *account* rather than the site
+    and would otherwise stay listed under the previous holder.
     The old bills keep naming the previous owner, which is what rule 2 is for.
     """
     serial = payload.meter_serial.strip()
@@ -540,6 +577,15 @@ async def claim_site(
                 status_code=409,
                 detail="that meter was claimed while you were claiming it",
             )
+
+        # The meters come with it. A meter_asset is issued to a person
+        # (migration c9e2f4a71b83), so transferring only the site would leave
+        # the new owner holding connections whose hardware is still listed
+        # under the previous holder -- and their Meters page saying they own
+        # no meters at all.
+        await conn.execute(
+            sql("transfer_meter_assets"), site["site_id"], principal.account_id
+        )
 
         row = await conn.fetchrow(sql("get_site"), site["site_id"])
     return Site(**dict(row))
@@ -611,8 +657,15 @@ async def register_meter(
     payload: MeterRegister,
     principal: Annotated[Principal, Depends(require_role("consumer"))],
 ) -> MeterRegisterOut:
-    """Register a bidirectional billing meter on this site and give it 90 days
-    of history so the dashboard is not empty the moment it exists.
+    """Install one of the household's own meters on this site and give it 90
+    days of history so the dashboard is not empty the moment it exists.
+
+    The meter must already be **issued to this consumer and unassigned** --
+    `meter_asset.device_id IS NULL`. That is the whole shape of the change in
+    migration c9e2f4a71b83: the utility issues hardware against an identity,
+    and the household's part is choosing which connection it serves. A caller
+    with nothing available applies at POST /api/meter-applications; there is no
+    path here that invents a serial.
 
     Additive. A household may hold several billing meters, one per billing
     point (rule 7 constrains the point, not the site, since migration
@@ -632,25 +685,58 @@ async def register_meter(
     """
     await visible_site_or_404(conn, principal, site_id)
 
-    serial = payload.serial_no.strip()
     device_key_hash = hash_password(secrets.token_hex(32))
     backfill_from = date.today() - timedelta(days=BACKFILL_DAYS)
     backfill_to = date.today() - timedelta(days=1)
 
+    asset = await conn.fetchrow(
+        sql("meter_asset_for_assignment"),
+        payload.meter_asset_id, principal.account_id,
+    )
+    if asset is None:
+        # A meter belonging to somebody else reads the same as one that does
+        # not exist. The caller cannot act on the difference, and telling them
+        # apart would turn this into a probe for other people's hardware.
+        raise HTTPException(status_code=404, detail="meter not found")
+    serial = asset["serial_no"]
+
     async with conn.transaction():
         point = await _point_for_new_meter(conn, site_id, payload)
+        replaced = None
 
         if await conn.fetchval(sql("point_has_billing_meter"), point["point_id"]):
-            raise HTTPException(
-                status_code=409,
-                detail=f"'{point['label']}' already has a billing meter",
+            if not payload.replace_existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"'{point['label']}' already has a billing meter. Send "
+                        "replace_existing to swap it."
+                    ),
+                )
+            # Rule 7's triggers are DEFERRED, so the point may briefly hold
+            # none or two inside this transaction; only COMMIT is checked.
+            replaced = await conn.fetchrow(
+                sql("retire_point_billing_meter"), point["point_id"]
             )
+
+        if payload.replace_existing:
+            # Never re-cover ground the retired meter already holds:
+            # site_readings sums across every device on the site, so an
+            # overlapping backfill would double the household's import. In the
+            # ordinary case the point is covered through yesterday and this
+            # window is empty, which is correct -- the new meter starts
+            # measuring now, and the connection keeps its history.
+            last_day = await conn.fetchval(
+                sql("point_reading_horizon"), point["point_id"]
+            )
+            if last_day is not None:
+                backfill_from = max(backfill_from, last_day + timedelta(days=1))
 
         try:
             device_id = await conn.fetchval(
                 sql("create_meter_device"),
-                site_id, serial, payload.manufacturer.strip(),
-                payload.model.strip(), device_key_hash,
+                site_id, serial, asset["manufacturer"] or "Unknown",
+                asset["model"] or "Unknown", device_key_hash,
             )
         except asyncpg.UniqueViolationError:
             raise HTTPException(
@@ -658,13 +744,31 @@ async def register_meter(
                 detail=f"a device with serial '{serial}' is already registered",
             ) from None
 
+        # The claim is what actually decides, and it is inside the transaction
+        # with the device it points at: two tabs assigning one meter to two
+        # connections produce one winner, and the loser's device row rolls back
+        # with it rather than being left orphaned under a serial nobody holds.
+        claimed = await conn.fetchval(
+            sql("claim_meter_asset"),
+            payload.meter_asset_id, principal.account_id, device_id,
+        )
+        if claimed is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"meter '{serial}' is already assigned to a connection",
+            )
+
         await conn.execute(
             sql("create_meter_spec"), device_id, site_id, point["point_id"]
         )
 
-        reading_count = await conn.fetchval(
-            "SELECT backfill_readings($1, $2, $3, NULL)",
-            device_id, backfill_from, backfill_to,
+        reading_count = (
+            await conn.fetchval(
+                "SELECT backfill_readings($1, $2, $3, NULL)",
+                device_id, backfill_from, backfill_to,
+            )
+            if backfill_from <= backfill_to
+            else 0
         )
 
     return MeterRegisterOut(
@@ -676,6 +780,7 @@ async def register_meter(
         backfill_from=backfill_from,
         backfill_to=backfill_to,
         readings_backfilled=reading_count,
+        replaced_serial_no=replaced["serial_no"] if replaced else None,
     )
 
 
@@ -690,25 +795,26 @@ async def register_solar(
     payload: SolarRegister,
     principal: Annotated[Principal, Depends(require_role("consumer"))],
 ) -> SolarRegisterOut:
-    """Add an inverter, its array and a net-metering agreement, then backfill
-    the same 90-day window the meter got so the two lines agree on how far
-    back the chart goes -- and re-net the meter's own history, since it was
-    written before any solar existed to net against (see backfill_readings'
-    upsert note in db/sql/service/backfill.sql).
+    """Add an inverter and its array, then backfill the same 90-day window the
+    meter got so the two lines agree on how far back the chart goes -- and
+    re-net the meter's own history, since it was written before any solar
+    existed to net against (see backfill_readings' upsert note in
+    db/sql/service/backfill.sql).
+
+    **This registers hardware and nothing else.** It used to open a `pending`
+    net-metering agreement as a side effect, which meant a household applied to
+    sell power back to the grid by filling in a panel-count form and was never
+    asked. Net metering is now an explicit application the consumer submits --
+    POST /api/net-metering-applications -- because it is a different act, months
+    later in real life, and the regulator's answer is about the connection, not
+    about the roof.
 
     Additive, not once-per-connection. `solar_array` is 1-N, so a connection
-    may genuinely carry several arrays, and two things follow from that:
-
-    * The meter is re-netted against the billing point's TOTAL AC capacity,
-      not the array just registered. Passing this array's capacity alone would
-      rewrite an existing multi-array history as if the other arrays were not
-      there, silently *reducing* recorded export.
-    * The agreement is reused. `nma_no_overlap` allows one non-terminated
-      agreement per billing point, and rule 1 forbids editing a live one's
-      sanctioned capacity -- an uprate is a new agreement with its own
-      effective_from, which is a government decision, not something this
-      endpoint may take. So a second array joins the existing agreement, and
-      the response says so via `agreement_created`.
+    may genuinely carry several arrays, and the meter is re-netted against the
+    billing point's TOTAL AC capacity rather than the array just registered.
+    Passing this array's capacity alone would rewrite an existing multi-array
+    history as if the other arrays were not there, silently *reducing* recorded
+    export.
 
     Everything here is scoped to one billing point rather than the whole site.
     A household with two connections has two meters, two agreements and two
@@ -753,30 +859,6 @@ async def register_solar(
             dc_capacity_kw, payload.azimuth_deg, payload.tilt_deg,
         )
 
-        open_agreement = await conn.fetchrow(sql("point_open_agreement"), point_id)
-        agreement_created = open_agreement is None
-        if agreement_created:
-            try:
-                agreement_id = await conn.fetchval(
-                    sql("create_net_metering_agreement"),
-                    site_id, point_id, billing_device_id,
-                    f"ONB-NMA-{uuid4().hex[:10].upper()}",
-                    point_capacity_kw,
-                )
-            except asyncpg.ExclusionViolationError:
-                # Backstop for the race the SELECT above cannot close: two
-                # concurrent /solar calls on one point. Without it that
-                # surfaces as a 500.
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"'{point['label']}' already has a net-metering "
-                        "agreement"
-                    ),
-                ) from None
-        else:
-            agreement_id = open_agreement["agreement_id"]
-
         reading_count = await conn.fetchval(
             "SELECT backfill_readings($1, $2, $3, $4)",
             inverter_id, backfill_from, backfill_to, payload.capacity_kw,
@@ -798,9 +880,7 @@ async def register_solar(
     return SolarRegisterOut(
         inverter_device_id=inverter_id,
         array_id=array_id,
-        agreement_id=agreement_id,
         point_id=point_id,
-        agreement_created=agreement_created,
         array_count=array_count,
         point_capacity_kw=point_capacity_kw,
         backfill_from=backfill_from,
