@@ -37,7 +37,7 @@ import {
  * hours after it.
  *
  * Ratings are the sort key supplier requirement 4 asks for, and households now
- * write them from /customer/visits. A technician nobody has rated still reads
+ * write them from /consumer/visits. A technician nobody has rated still reads
  * "not yet rated" and sorts below the rated rather than above -- absent is not
  * the same fact as zero.
  *
@@ -251,7 +251,7 @@ function Countdown({ until }: { until: string | null }) {
   if (!until) return null;
   const mins = Math.round((+new Date(until) - Date.now()) / 60000);
   if (mins <= 0) {
-    return <Badge tone="critical">due &mdash; next sweep will release it</Badge>;
+    return <Badge tone="critical">due &mdash; returning to the queue</Badge>;
   }
   const text =
     mins < 60

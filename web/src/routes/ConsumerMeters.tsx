@@ -30,7 +30,7 @@ import {
  * because that is what the utility actually issues.
  *
  * What changed on 2026-08-27: **there is no serial number field here any
- * more.** A meter is the utility's hardware, issued to a customer against
+ * more.** A meter is the utility's hardware, issued to a consumer against
  * their identity, and typing a number at a form let a household conjure
  * hardware nobody owns. The page now shows what they have been issued and asks
  * only which connection each one serves. A household with nothing spare is
@@ -40,7 +40,7 @@ const FIELD =
   "w-full rounded-md border border-hairline bg-surface px-3 py-2 text-sm " +
   "text-ink outline-none focus:border-series-import";
 
-export default function CustomerMeters() {
+export default function ConsumerMeters() {
   const { siteId, site, isPending: siteLoading, error: siteError } =
     useSelectedSite();
 
@@ -252,7 +252,7 @@ function AddSolar({
       <div className="mt-3 rounded-md bg-status-good/12 px-3 py-2 text-xs text-status-good-text">
         Registered on <strong>{point.label}</strong>, and its meter history was
         re-netted so past export shows up. Next: apply for{" "}
-        <Link to="/customer/applications" className="underline">
+        <Link to="/consumer/applications" className="underline">
           net metering
         </Link>{" "}
         — until your utility approves that, exports earn no credit.
@@ -321,7 +321,7 @@ function AddSolar({
         <button
           type="submit"
           disabled={add.isPending || !valid}
-          className="rounded-md bg-portal-customer px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-md bg-portal-consumer px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {add.isPending ? "Registering…" : "Register array"}
         </button>
@@ -397,8 +397,8 @@ function NothingSpare() {
           a connection.
         </p>
         <Link
-          to="/customer/applications"
-          className="mt-3 inline-block rounded-md bg-portal-customer px-4 py-2 text-sm font-medium text-white"
+          to="/consumer/applications"
+          className="mt-3 inline-block rounded-md bg-portal-consumer px-4 py-2 text-sm font-medium text-white"
         >
           Apply for a meter
         </Link>
@@ -473,7 +473,7 @@ function AssignMeter({
     <Card>
       <CardHeader
         title="Install a meter"
-        subtitle="Put one of your available meters on a connection at this address. It gets 90 days of history so its chart and bills are not empty."
+        subtitle="Put one of your available meters on a connection at this address."
       />
 
       <form
@@ -591,7 +591,7 @@ function AssignMeter({
         <button
           type="submit"
           disabled={add.isPending || !selected}
-          className="rounded-md bg-portal-customer px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50"
+          className="rounded-md bg-portal-consumer px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50"
         >
           {add.isPending
             ? "Installing…"

@@ -27,7 +27,7 @@ import {
 /**
  * Consumer requirement 7's install half: pick a nearby installer and apply.
  *
- * One of the three panels on /customer/applications. The requirement bundles
+ * One of the three panels on /consumer/applications. The requirement bundles
  * two things that happen months apart and this is deliberately only the first:
  * applying to an installer is choosing who climbs on the roof. **Net metering
  * is a different application** -- the regulator agreeing that what the panels
@@ -94,10 +94,8 @@ export default function SolarApplications() {
             ) : (
               <p>
                 An installer surveys your roof and fits the panels. Once they
-                are in, applying for <b>net metering</b> is the next tab —
-                that is your utility agreeing to credit what you send back to
-                the grid, and it only makes sense once there is something to
-                send.
+                are in, apply for <b>net metering</b> on the next tab so your
+                exports start earning credit.
               </p>
             )}
           </div>
@@ -118,7 +116,7 @@ export default function SolarApplications() {
         ) : mine.length === 0 ? (
           <EmptyState
             title="You have not applied yet"
-            hint="Applications stay listed here whatever happens to them, so you always have the record of having asked."
+            hint="Applications you submit appear here."
           />
         ) : (
           <ul className="divide-y divide-hairline">

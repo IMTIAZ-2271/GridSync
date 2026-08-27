@@ -4,11 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import { api, queryKeys, type Site } from "../lib/api";
 
 /**
- * The customer's current site.
+ * The consumer's current site.
  *
  * The site is no longer named in the URL. /api/sites now returns exactly the
  * sites the token's account owns, so the selection is derived from who is
- * signed in -- a customer cannot address someone else's site by editing a
+ * signed in -- a consumer cannot address someone else's site by editing a
  * query string, and the API would answer 404 if they tried.
  *
  * The schema still allows one account to own several sites

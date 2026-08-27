@@ -24,7 +24,7 @@ import {
 } from "../components/ui";
 
 /**
- * Equipment health for the signed-in customer's site.
+ * Equipment health for the signed-in consumer's site.
  *
  * Only devices that are supposed to report appear here: the API filters on
  * `reports_telemetry`, because a coverage figure for a device that produces no
@@ -36,7 +36,7 @@ import {
  * endpoint, not something each client re-invents.
  */
 
-export default function CustomerDevices() {
+export default function ConsumerDevices() {
   const { siteId, site } = useSelectedSite();
 
   const devices = useQuery({
@@ -78,15 +78,6 @@ export default function CustomerDevices() {
         </ul>
       )}
 
-      {/* The honest footnote. There is no ingest service yet (CLAUDE.md, NOT
-          DONE), so "reporting" means rows exist for the expected intervals --
-          not that a device answered a poll a minute ago. Saying so is better
-          than implying a live heartbeat this system does not have. */}
-      <p className="border-t border-hairline px-5 py-3 text-xs text-ink-muted">
-        Health is measured from the readings actually stored for each device
-        against the number its reporting interval calls for. It is not a live
-        heartbeat.
-      </p>
     </Card>
 
     {/* Consumer requirement 8. Below the devices because an array is made
@@ -132,7 +123,7 @@ function DeviceRow({ device }: { device: SiteDevice }) {
         </div>
 
         <Link
-          to={`/customer/issues?device=${device.device_id}&category=${issueCategoryFor(device)}`}
+          to={`/consumer/issues?device=${device.device_id}&category=${issueCategoryFor(device)}`}
           className="shrink-0 rounded-md border border-hairline px-2.5 py-1 text-xs font-medium text-ink-2 transition-colors hover:bg-plane"
         >
           Report a problem

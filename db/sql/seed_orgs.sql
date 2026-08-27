@@ -164,7 +164,7 @@ WHERE w.account_id = (
 -- ---------------------------------------------------------------------------
 -- Give every 'government' account a government_profile.
 --
--- The demo accounts predate migration e7c4b19a2d83: `gov@demo.com` was created
+-- The demo accounts predate migration e7c4b19a2d83: `gov1@demo.com` was created
 -- when 'government' was a bare account_role with nothing behind it, so it has
 -- no profile and therefore governs no district. That was invisible while the
 -- regulator only read fleet-wide aggregates, and stopped being invisible the
@@ -216,7 +216,7 @@ WHERE EXISTS (SELECT 1 FROM claimed WHERE claimed.code = p.code);
 -- Give every 'supplier' account a supplier_profile.
 --
 -- Exactly the same gap as the government one above, and found the same way:
--- `supplier@demo.com` was created when 'supplier' was a bare account_role with
+-- `supplier1@demo.com` was created when 'supplier' was a bare account_role with
 -- no company behind it. It stayed invisible while the supplier only read
 -- fleet-wide lists, and surfaced the moment a household tried to RATE the firm
 -- that sent a technician -- `service_rating.supplier_id` is derived from the
@@ -244,7 +244,7 @@ WHERE a.role = 'supplier'
 -- an account, and backfilled the rows that existed when it ran. A database
 -- built from scratch runs the seeds AFTER that migration, so the seeded
 -- meters would otherwise have no asset behind them -- the demo household
--- would open /customer/meters and be told it owns none of the meters it is
+-- would open /consumer/meters and be told it owns none of the meters it is
 -- plainly billed for.
 --
 -- Same projection as the migration's backfill, and idempotent on the device:
@@ -296,7 +296,7 @@ SELECT a.account_id,
         LIMIT 1)
 FROM account a
 CROSS JOIN (VALUES ('GSM-DEMO0001'), ('GSM-DEMO0002')) AS spare(serial_no)
-WHERE a.email = 'customer@demo.com'
+WHERE a.email = 'consumer1@demo.com'
   AND NOT EXISTS (
       SELECT 1 FROM meter_asset ma WHERE ma.serial_no = spare.serial_no
   );

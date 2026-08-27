@@ -1,7 +1,7 @@
 """Meter assets and meter applications.
 
 The household no longer types a serial number to register a meter. A meter is
-the utility's hardware, issued to a customer against their identity, and what
+the utility's hardware, issued to a consumer against their identity, and what
 the household does is say which of *their* meters serves which connection --
 see migration c9e2f4a71b83.
 

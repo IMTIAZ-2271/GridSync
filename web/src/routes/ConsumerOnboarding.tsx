@@ -13,7 +13,7 @@ import { Card, CardHeader } from "../components/ui";
 import { FIELD } from "../components/AuthShell";
 
 /**
- * Onboarding for a customer whose account owns no site yet.
+ * Onboarding for a consumer whose account owns no site yet.
  *
  * Three steps collect the site, its billing meter, and (optionally) its
  * solar array, then a single submit sequence walks the backend chain:
@@ -67,7 +67,7 @@ interface SolarForm {
 
 const STEP_LABELS = ["Site", "Billing meter", "Solar"];
 
-export default function CustomerOnboarding() {
+export default function ConsumerOnboarding() {
   const queryClient = useQueryClient();
   const { setSiteId } = useSelectedSite();
 
@@ -507,10 +507,6 @@ export default function CustomerOnboarding() {
                       className={FIELD}
                     />
                   </Field>
-                  <p className="text-xs text-ink-muted">
-                    Until a meter is installed this site has no readings and no
-                    bills. That is the truth of it -- nothing is measuring yet.
-                  </p>
                 </>
               )}
 
@@ -712,7 +708,7 @@ function FinishingScreen({
               ? applied
                 ? "Your district office will decide, and you will be notified."
                 : "Redirecting to your dashboard."
-              : "This takes a few seconds -- each device backfills 90 days of readings."
+              : "This takes a few seconds."
           }
         />
         <div className="space-y-4 p-5">
@@ -730,13 +726,13 @@ function FinishingScreen({
             <>
               <StepRow
                 label="Billing meter"
-                detail="Backfilling 90 days of readings (~4,300 rows)"
+                detail="Loading its reading history"
                 status={statusOf("meter")}
               />
               {withSolar && (
                 <StepRow
                   label="Solar array"
-                  detail="Backfilling 90 days of generation (~4,300 rows)"
+                  detail="Loading its generation history"
                   status={statusOf("solar")}
                 />
               )}

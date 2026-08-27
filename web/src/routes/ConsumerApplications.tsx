@@ -61,7 +61,7 @@ const TABS: { id: TabId; label: string; blurb: string }[] = [
   },
 ];
 
-export default function CustomerApplications() {
+export default function ConsumerApplications() {
   const [tab, setTab] = useState<TabId>("solar");
   const active = TABS.find((t) => t.id === tab)!;
 
@@ -681,9 +681,7 @@ function MeterPanel() {
                   className="mt-1 w-full rounded-lg border border-hairline bg-surface px-3 py-2 text-ink"
                 />
                 <span className="mt-1 block text-xs text-ink-muted">
-                  The office sees how many meters this address already has, so a
-                  line about what the new one is for is what makes the decision
-                  quick.
+                  A line about what the meter is for makes the decision quicker.
                 </span>
               </label>
               <button
@@ -726,7 +724,7 @@ function MeterPanel() {
         ) : mine.length === 0 ? (
           <EmptyState
             title="You have not applied yet"
-            hint="Applications stay listed here whatever happens to them, so you always have the record of having asked."
+            hint="Applications you submit appear here."
           />
         ) : (
           <ul className="divide-y divide-hairline">

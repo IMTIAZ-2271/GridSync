@@ -98,10 +98,10 @@ export default function Layout() {
               ))}
             </nav>
 
-            {/* Only rendered when the customer owns more than one site; see
+            {/* Only rendered when the consumer owns more than one site; see
                 SitePicker. The site itself comes from the token now, not the
                 query string. */}
-            {active.id === "customer" && <SitePicker />}
+            {active.id === "consumer" && <SitePicker />}
           </div>
         </div>
       </div>

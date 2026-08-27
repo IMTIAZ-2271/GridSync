@@ -348,8 +348,7 @@ function ApplicationRow({
               className="mt-1 w-full rounded-lg border border-hairline bg-surface px-3 py-2 text-ink"
             />
             <span className="mt-1 block text-xs text-ink-muted">
-              The applicant sees this. A rejection they cannot act on is worse
-              than no answer.
+              The applicant sees this.
             </span>
           </label>
           <div className="flex flex-wrap items-center gap-3">

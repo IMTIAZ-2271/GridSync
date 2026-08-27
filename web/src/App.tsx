@@ -1,18 +1,18 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import Layout from "./components/Layout";
 import RequireAuth from "./auth/RequireAuth";
 import { HOME_FOR_ROLE, useAuth } from "./auth/AuthContext";
 import Login from "./routes/Login";
 import Register from "./routes/Register";
-import CustomerOverview from "./routes/CustomerOverview";
-import CustomerBills from "./routes/CustomerBills";
-import CustomerDevices from "./routes/CustomerDevices";
-import CustomerMeters from "./routes/CustomerMeters";
-import CustomerIssues from "./routes/CustomerIssues";
-import CustomerSettings from "./routes/CustomerSettings";
-import CustomerApplications from "./routes/CustomerApplications";
-import CustomerVisits from "./routes/CustomerVisits";
+import ConsumerOverview from "./routes/ConsumerOverview";
+import ConsumerBills from "./routes/ConsumerBills";
+import ConsumerDevices from "./routes/ConsumerDevices";
+import ConsumerMeters from "./routes/ConsumerMeters";
+import ConsumerIssues from "./routes/ConsumerIssues";
+import ConsumerSettings from "./routes/ConsumerSettings";
+import ConsumerApplications from "./routes/ConsumerApplications";
+import ConsumerVisits from "./routes/ConsumerVisits";
 import WorkerOrders from "./routes/WorkerOrders";
 import WorkerIssues from "./routes/WorkerIssues";
 import GovernmentByArea from "./routes/GovernmentByArea";
@@ -25,6 +25,18 @@ import SupplierApplications from "./routes/SupplierApplications";
 import SupplierDispatch from "./routes/SupplierDispatch";
 import SupplierIssues from "./routes/SupplierIssues";
 import SupplierEquipment from "./routes/SupplierEquipment";
+
+/**
+ * The consumer portal lived at /customer until 2026-08-27. Redirect the whole
+ * subtree rather than letting an old bookmark fall through to Home, so a link
+ * to /customer/bills still opens the bills page.
+ */
+function LegacyConsumerPath() {
+  const { pathname, search } = useLocation();
+  return (
+    <Navigate to={pathname.replace(/^\/customer/, "/consumer") + search} replace />
+  );
+}
 
 /** Send "/" to the signed-in role's portal, or to the login page. */
 function Home() {
@@ -50,22 +62,24 @@ export default function App() {
         <Route element={<Layout />}>
           <Route index element={<Home />} />
 
-          <Route path="customer">
-            <Route index element={<CustomerOverview />} />
-            <Route path="bills" element={<CustomerBills />} />
-            <Route path="meters" element={<CustomerMeters />} />
-            <Route path="devices" element={<CustomerDevices />} />
-            <Route path="issues" element={<CustomerIssues />} />
-            <Route path="applications" element={<CustomerApplications />} />
+          <Route path="consumer">
+            <Route index element={<ConsumerOverview />} />
+            <Route path="bills" element={<ConsumerBills />} />
+            <Route path="meters" element={<ConsumerMeters />} />
+            <Route path="devices" element={<ConsumerDevices />} />
+            <Route path="issues" element={<ConsumerIssues />} />
+            <Route path="applications" element={<ConsumerApplications />} />
             {/* The tab was called "Solar" until 2026-08-27. Kept as a
                 redirect so a bookmark still lands somewhere. */}
             <Route
               path="solar"
-              element={<Navigate to="/customer/applications" replace />}
+              element={<Navigate to="/consumer/applications" replace />}
             />
-            <Route path="visits" element={<CustomerVisits />} />
-            <Route path="settings" element={<CustomerSettings />} />
+            <Route path="visits" element={<ConsumerVisits />} />
+            <Route path="settings" element={<ConsumerSettings />} />
           </Route>
+
+          <Route path="customer/*" element={<LegacyConsumerPath />} />
 
           <Route path="worker">
             <Route index element={<WorkerOrders />} />

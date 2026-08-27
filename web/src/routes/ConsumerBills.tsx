@@ -45,7 +45,7 @@ const TOU_LABEL: Record<string, string> = {
   flat: "Flat",
 };
 
-export default function CustomerBills() {
+export default function ConsumerBills() {
   const { siteId } = useSelectedSite();
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -73,7 +73,7 @@ export default function CustomerBills() {
       ) : bills.data.length === 0 ? (
         <EmptyState
           title="No bills yet"
-          hint="Bills appear once a billing period for this site has been closed and run."
+          hint="Bills appear at the end of each billing period."
         />
       ) : (
         <div className="overflow-x-auto">

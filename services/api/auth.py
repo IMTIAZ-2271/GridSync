@@ -4,10 +4,9 @@ Three things live here: how a password becomes a hash, how an account becomes
 a bearer token, and how a request becomes an authenticated `Principal` the
 route handlers can authorize against.
 
-Roles map onto the four portals. `consumer` is the customer portal's role --
-the enum predates the portals and the schema's word for a household is
-`consumer`, so that name is kept rather than migrating a live enum for
-cosmetics.
+Roles map onto the four portals, one name each: the `consumer` role opens the
+consumer portal. The portal was called "customer" until 2026-08-27, which is
+why verification notes older than that say so; the enum never used the word.
 """
 from __future__ import annotations
 
@@ -203,7 +202,7 @@ def registration_code(role: Literal["government", "supplier"]) -> str:
 #
 # require_role() answers "may this role call this endpoint at all". This
 # answers the narrower question: "may this caller see THIS row". Both are
-# needed -- a customer may legitimately call /summary, but only for a site
+# needed -- a consumer may legitimately call /summary, but only for a site
 # they own.
 # --------------------------------------------------------------------------
 

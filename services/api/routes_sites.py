@@ -1,6 +1,6 @@
 """Sites: the dashboard's core read surface, plus onboarding.
 
-A customer with no site lands in the onboarding flow at the bottom of this
+A consumer with no site lands in the onboarding flow at the bottom of this
 file: POST /api/sites, then /meter, then optionally /solar, then /bill. Every
 step is scoped to the caller's own account -- there is no site_id a consumer
 can pass that was not either just returned to them or already theirs.
@@ -363,7 +363,7 @@ async def _resolve_point(
 async def list_sites(conn: Conn, principal: CurrentAccount) -> list[Site]:
     """Sites this caller may see.
 
-    Government and supplier get the fleet; a customer gets the sites they own.
+    Government and supplier get the fleet; a consumer gets the sites they own.
     The narrowing is a different statement rather than a filter over the full
     list, so rows the caller may not see are never fetched.
     """
@@ -530,7 +530,7 @@ async def claim_site(
 ) -> Site:
     """Take ownership of an existing connection by the serial on its meter.
 
-    This used to be part of customer registration. Consumer requirement 2
+    This used to be part of consumer registration. Consumer requirement 2
     says a billing meter ID is not asked for at sign-up, so it moved here,
     behind a login -- which is also where requirement 3 puts adding meters.
     A household that already has a metered connection claims it; one that does
@@ -598,7 +598,7 @@ async def create_site(
     principal: Annotated[Principal, Depends(require_role("consumer"))],
 ) -> Site:
     district, latitude, longitude = await resolve_district(conn, payload.district)
-    # The address, not the constant "Home" this used to write. A customer with
+    # The address, not the constant "Home" this used to write. A consumer with
     # one site never noticed, but `site.label` is also what the supplier's
     # fleet table and the government's queue identify a site by, and eight rows
     # all reading "Home" identify nothing. The address is what a utility calls

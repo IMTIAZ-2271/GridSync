@@ -13,7 +13,7 @@ import { READING_VIEWS, SERIES, type ReadingViewId } from "../lib/series";
 import { useSelectedSite } from "../components/SitePicker";
 import ScopePicker, { type ScopeOption } from "../components/ScopePicker";
 import ReadingsChart from "../components/ReadingsChart";
-import CustomerOnboarding from "./CustomerOnboarding";
+import ConsumerOnboarding from "./ConsumerOnboarding";
 import {
   Card,
   CardHeader,
@@ -41,7 +41,7 @@ const TIMEFRAMES: { id: TimeframeId; label: string; window: string }[] = [
   { id: "year", label: "Year", window: "last 12 months, monthly" },
 ];
 
-export default function CustomerOverview() {
+export default function ConsumerOverview() {
   const { siteId, site, sites, isPending: sitesPending } = useSelectedSite();
 
   const [timeframe, setTimeframe] = useState<TimeframeId>("week");
@@ -103,11 +103,11 @@ export default function CustomerOverview() {
 
   const frame = TIMEFRAMES.find((t) => t.id === timeframe)!;
 
-  // A newly registered customer (empty meter serial) owns no site at all --
+  // A newly registered consumer (empty meter serial) owns no site at all --
   // an empty dashboard would just look broken. Walk them through building
   // one instead of rendering stat tiles for data that does not exist.
   if (!sitesPending && sites && sites.length === 0) {
-    return <CustomerOnboarding />;
+    return <ConsumerOnboarding />;
   }
 
   return (
@@ -160,7 +160,7 @@ export default function CustomerOverview() {
                       aria-current={active.id === v.id}
                       className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                         active.id === v.id
-                          ? "bg-portal-customer text-white"
+                          ? "bg-portal-consumer text-white"
                           : "text-ink-2 hover:bg-hairline/60"
                       }`}
                     >

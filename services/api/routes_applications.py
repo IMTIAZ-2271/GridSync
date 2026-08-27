@@ -99,7 +99,7 @@ async def _supplier_id_for(conn: asyncpg.Connection, principal: Principal) -> UU
 
     A supplier login with no `supplier_profile` gets 403 rather than being
     silently treated as every firm at once. That state is not hypothetical:
-    `supplier@demo.com` was exactly this until seed_orgs.sql was taught to
+    `supplier1@demo.com` was exactly this until seed_orgs.sql was taught to
     attach a profile — see CLAUDE.md.
     """
     supplier_id = await conn.fetchval(

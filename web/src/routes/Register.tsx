@@ -17,7 +17,7 @@ import { AuthShell, FIELD, SubmitButton } from "../components/AuthShell";
  * The four shapes differ because each role's identity hangs off a different
  * key, and the form asks for exactly that key and nothing more:
  *
- * - **Customer** — National ID only. A billing meter ID is deliberately not
+ * - **Consumer** — National ID only. A billing meter ID is deliberately not
  *   collected here; a household links an existing connection after signing in,
  *   or builds a new one in the onboarding wizard.
  * - **Worker** — National ID, region, and whether they are a government or
@@ -28,17 +28,17 @@ import { AuthShell, FIELD, SubmitButton } from "../components/AuthShell";
  *   the district they govern.
  * - **Supplier** — the shared staff code plus the installer they work for.
  */
-type Tab = "customer" | "worker" | "government" | "supplier";
+type Tab = "consumer" | "worker" | "government" | "supplier";
 
 const TABS: { id: Tab; label: string; accent: string }[] = [
-  { id: "customer", label: "Customer", accent: "bg-portal-customer" },
+  { id: "consumer", label: "Consumer", accent: "bg-portal-consumer" },
   { id: "worker", label: "Worker", accent: "bg-portal-worker" },
   { id: "government", label: "Government", accent: "bg-portal-government" },
   { id: "supplier", label: "Supplier", accent: "bg-portal-supplier" },
 ];
 
 const BLURB: Record<Tab, string> = {
-  customer:
+  consumer:
     "Create your household account. You will add your billing meters once you are signed in — you can have more than one.",
   worker:
     "Register as a field worker. Government workers are approved by an official in their region before they receive work orders.",
@@ -82,7 +82,7 @@ export default function Register() {
   const { account, isLoading, adopt } = useAuth();
   const navigate = useNavigate();
 
-  const [tab, setTab] = useState<Tab>("customer");
+  const [tab, setTab] = useState<Tab>("consumer");
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -137,8 +137,8 @@ export default function Register() {
         national_id: nationalId.trim(),
       };
       let token: TokenResponse;
-      if (tab === "customer") {
-        token = await api.registerCustomer({
+      if (tab === "consumer") {
+        token = await api.registerConsumer({
           ...base,
           phone: phone.trim() || null,
         });
@@ -277,7 +277,7 @@ export default function Register() {
           </Field>
         </div>
 
-        {(tab === "customer" || tab === "worker") && (
+        {(tab === "consumer" || tab === "worker") && (
           <Field id="reg-phone" label="Phone" optional>
             <input
               id="reg-phone"
@@ -383,13 +383,12 @@ export default function Register() {
           <Field
             id="reg-code"
             label="Official ID"
-            hint="Issued to you personally, and usable once. Demo: GOV-GULSHAN-01"
+            hint="Issued to you personally, and usable once."
           >
             <input
               id="reg-code"
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              placeholder="GOV-GULSHAN-01"
               className={`mt-1 font-mono ${FIELD}`}
               required
             />
@@ -401,13 +400,12 @@ export default function Register() {
             <Field
               id="reg-code"
               label="Registration code"
-              hint="Demo: SUP-2026"
+              hint="Given to you by your organisation."
             >
               <input
                 id="reg-code"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                placeholder="SUP-2026"
                 className={`mt-1 font-mono ${FIELD}`}
                 required
               />
@@ -415,7 +413,7 @@ export default function Register() {
             <Field
               id="reg-supplier"
               label="Your organisation"
-              hint="The installer you work for. Demo: NOOR, SOLARIS, RAHIMA, PADMA"
+              hint="The installer you work for."
             >
               <input
                 id="reg-supplier"

@@ -256,5 +256,5 @@ COMMENT ON FUNCTION backfill_readings(uuid, date, date, numeric) IS
 'meter''s history once solar capacity becomes known. Any interval inside an '
 'already frozen/billed/closed billing_period is skipped regardless (rule 8), '
 'since no trigger currently enforces that boundary on device_reading. '
-'Extracted from db/sql/seed_demo.sql for reuse by the customer onboarding '
+'Extracted from db/sql/seed_demo.sql for reuse by the consumer onboarding '
 'endpoints.';

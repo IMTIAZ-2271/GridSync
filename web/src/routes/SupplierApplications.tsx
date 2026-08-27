@@ -277,8 +277,7 @@ function ApplicationRow({
             />
           </label>
           <p className="text-xs text-ink-muted">
-            This is sent to the household. "Not accepted" on its own tells them
-            nothing they can act on.
+            This is sent to the household.
           </p>
           <div className="flex items-center gap-3">
             <button

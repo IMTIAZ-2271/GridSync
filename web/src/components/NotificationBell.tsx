@@ -12,7 +12,7 @@ import { Badge } from "./ui";
  * official approving an agreement, and eventually the jobs sweep expiring an
  * offer -- so there is nothing for a mutation to invalidate. Thirty seconds is
  * slow enough to be free and fast enough that "I marked it done" and "the
- * customer saw it" happen in the same conversation.
+ * consumer saw it" happen in the same conversation.
  *
  * `unread_count` comes from the same response as the list, so the badge and
  * the panel can never disagree.

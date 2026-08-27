@@ -24,7 +24,7 @@ import {
  * Fleet equipment inventory.
  *
  * One request, not one per site: `GET /api/devices` runs the same
- * `device_health` statement the customer's equipment page runs, with the site
+ * `device_health` statement the consumer's equipment page runs, with the site
  * filter left NULL. Rendering this table from the per-site route would be N+1
  * requests for a single screen.
  *
@@ -129,7 +129,7 @@ export default function SupplierEquipment() {
                 ).length,
               )}
               unit="meters"
-              footnote="Rule 8 refuses to bill a period with missing intervals"
+              footnote="A meter with missing intervals cannot be billed"
             />
           </>
         )}
@@ -205,10 +205,11 @@ export default function SupplierEquipment() {
           </div>
         )}
 
+        {/* Kept: it stops "silent" being read as "offline right now", which
+            is the difference between sending a technician and waiting. */}
         <p className="border-t border-hairline px-5 py-3 text-xs text-ink-muted">
-          Health is measured from the readings actually stored for each device
-          against the number its reporting interval calls for. It is not a live
-          heartbeat.
+          Health counts the readings each device has stored against the number
+          its interval calls for. It is not a live connection check.
         </p>
       </Card>
     </div>

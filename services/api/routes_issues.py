@@ -1,4 +1,4 @@
-"""Issues: faults reported against a site, by a customer or a worker."""
+"""Issues: faults reported against a site, by a consumer or a worker."""
 from __future__ import annotations
 
 from datetime import datetime

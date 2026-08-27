@@ -145,8 +145,7 @@ export default function WorkerIssues() {
       )}
 
       <p className="border-t border-hairline px-5 py-3 text-xs text-ink-muted">
-        Advancing an issue records who asked and when. The physical work is
-        still tracked on the order raised against it, on the Work orders tab.
+        The visit itself is tracked on the Work orders tab.
       </p>
     </Card>
   );

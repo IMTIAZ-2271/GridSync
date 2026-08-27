@@ -110,7 +110,7 @@ LEFT JOIN LATERAL (
     WHERE b.site_id = s.site_id
       AND ($2::uuid IS NULL OR b.billing_point_id = $2)
       -- A voided bill has been superseded by a correction (rule 1); showing it
-      -- as "latest" would show the customer a number nobody owes.
+      -- as "latest" would show the consumer a number nobody owes.
       AND b.status <> 'void'
     ORDER BY bp.period_start DESC, b.issued_at DESC
     LIMIT 1
@@ -285,7 +285,7 @@ ORDER BY li.bill_id, li.sort_order;
 
 
 -- ---------------------------------------------------------------------------
--- Onboarding: a customer with no site building one from scratch.
+-- Onboarding: a consumer with no site building one from scratch.
 -- POST /api/sites, then /meter, then optionally /solar, then /bill.
 -- ---------------------------------------------------------------------------
 
@@ -293,7 +293,7 @@ ORDER BY li.bill_id, li.sort_order;
 -- Currently-effective plans, optionally narrowed to one connection type.
 -- $1 is nullable -- a NULL parameter makes the filter a no-op rather than a
 -- second statement, since the onboarding form may ask before or after the
--- customer has picked a connection type.
+-- consumer has picked a connection type.
 SELECT plan_id,
        code,
        name,
@@ -440,7 +440,7 @@ RETURNING device_id;
 -- name: create_meter_spec
 -- Always bidirectional/billing: this path only ever registers the one meter
 -- rule 7 requires *per billing point*. ct_ratio and phase_count are sane
--- installer defaults, not customer input.
+-- installer defaults, not consumer input.
 INSERT INTO meter_spec (
     device_id, site_id, billing_point_id, meter_flow, billing_role,
     ct_ratio, phase_count

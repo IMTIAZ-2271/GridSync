@@ -155,7 +155,7 @@ BEGIN
     --
     -- day_type resolution: holiday_calendar wins, then the Bangladesh
     -- weekend (Friday and Saturday, dow 5 and 6), else weekday. Times are
-    -- read in Asia/Dhaka so a TOU window means what the customer's clock
+    -- read in Asia/Dhaka so a TOU window means what the consumer's clock
     -- says, not what UTC says.
     -- -----------------------------------------------------------------
     WITH reading AS (

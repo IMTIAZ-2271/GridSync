@@ -194,7 +194,7 @@ async def sweep_overdue_starts(pool: asyncpg.Pool, limit: int) -> dict[str, int]
                     "{worker} accepted the {order} at {site} but never started "
                     "it. It is back in the queue and needs reassigning."
                 ),
-                # Worker requirement 5 names the customer as well as the
+                # Worker requirement 5 names the consumer as well as the
                 # supplier. They are the one who has been waiting in.
                 household_body=(
                     "The {order} booked for {site} was not started in time. "

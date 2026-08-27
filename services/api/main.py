@@ -14,7 +14,7 @@ routers that happen to need them. Three conventions govern all of them.
 **Every endpoint is authenticated, and authorization has two layers.**
 `require_role(...)` decides whether a role may call an endpoint at all;
 `visible_site_or_404` decides whether this particular caller may see this
-particular row. Both are needed -- a customer may legitimately call
+particular row. Both are needed -- a consumer may legitimately call
 /summary, but only for a site they own. Row scoping is done by selecting a
 narrower statement, not by filtering a full result set, so a row the caller
 may not see is never fetched. See services/api/auth.py.
@@ -29,7 +29,7 @@ as a JSON number would hand it to a JavaScript double, which is precisely the
 lossy step the rule exists to prevent, so the `Money`/`Energy`/`Rate` aliases
 in services/api/types.py pin serialization to str. The client parses them
 where it needs to plot them, and keeps the exact string wherever it displays a
-number a customer is being asked to pay.
+number a consumer is being asked to pay.
 """
 from __future__ import annotations
 

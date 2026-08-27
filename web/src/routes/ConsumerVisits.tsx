@@ -31,7 +31,7 @@ import {
  * be edited afterwards -- it is testimony about a particular visit -- so
  * pressing a star must not be what saves it. Choose, write, then send.
  */
-export default function CustomerVisits() {
+export default function ConsumerVisits() {
   const queryClient = useQueryClient();
   const visits = useQuery({
     queryKey: queryKeys.visits(),

@@ -13,8 +13,8 @@
 --   one of those into a usable account, and which row gets converted differs
 --   by role because the data hangs off different keys:
 --
---   * A customer's data is keyed on site_id -- readings, bills, credit ledger
---     and issues all follow the site. So a customer registers as a genuinely
+--   * A consumer's data is keyed on site_id -- readings, bills, credit ledger
+--     and issues all follow the site. So a consumer registers as a genuinely
 --     new account and the site is transferred to them. Old bills keep the
 --     previous account_id, which is rule 2 working as designed: a bill names
 --     whoever owed the money at the time, not whoever owns the site now.
@@ -68,7 +68,7 @@ WHERE a.account_id = $1;
 
 
 -- name: site_by_meter_serial
--- Resolve a customer's meter serial to the site it bills, and report whether
+-- Resolve a consumer's meter serial to the site it bills, and report whether
 -- that site is still claimable.
 --
 -- Restricted to the billing meter (rule 7): a generation-only meter or a check

@@ -6,7 +6,7 @@ import type { Role } from "../lib/api";
 
 /** Which roles may open which portal. Mirrors the API's require_role rules. */
 const PORTAL_ROLES: Record<PortalId, Role[]> = {
-  customer: ["consumer", "admin"],
+  consumer: ["consumer", "admin"],
   worker: ["worker", "admin"],
   government: ["government", "admin"],
   supplier: ["supplier", "admin"],

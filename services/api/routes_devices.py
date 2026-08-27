@@ -43,7 +43,7 @@ class SiteDevice(BaseModel):
     """One telemetry-reporting device, with its coverage over the window."""
 
     device_id: UUID
-    # Carried even on the single-site read, so the fleet view and the customer
+    # Carried even on the single-site read, so the fleet view and the consumer
     # view deserialize the same shape.
     site_id: UUID
     site_label: str
@@ -58,7 +58,7 @@ class SiteDevice(BaseModel):
     status: Literal["active", "faulty", "removed"]
 
     # Meter only. Rule 7: exactly one device per site is the 'billing' meter,
-    # and it is the one whose silence costs the customer money.
+    # and it is the one whose silence costs the consumer money.
     billing_role: Literal["billing", "generation_only", "check_meter"] | None
     meter_flow: Literal["unidirectional", "bidirectional"] | None
 

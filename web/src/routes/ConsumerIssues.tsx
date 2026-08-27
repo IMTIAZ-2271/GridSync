@@ -32,7 +32,7 @@ import {
   Skeleton,
 } from "../components/ui";
 
-export default function CustomerIssues() {
+export default function ConsumerIssues() {
   const { siteId, site } = useSelectedSite();
   const queryClient = useQueryClient();
 
@@ -50,7 +50,7 @@ export default function CustomerIssues() {
     queryFn: api.listIssues,
   });
 
-  // /api/issues is scoped server-side now: a customer's token returns only
+  // /api/issues is scoped server-side now: a consumer's token returns only
   // issues on sites they own. The client filter that used to be here is gone
   // -- it was never a boundary, and keeping it would imply it was.
   const mine = issues.data?.filter((i) => i.site_id === siteId) ?? [];

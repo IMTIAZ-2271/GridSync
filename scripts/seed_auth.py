@@ -1,4 +1,4 @@
-"""Generate and apply db/sql/seed_auth.sql -- the four demo login accounts.
+"""Generate and apply db/sql/seed_auth.sql -- the demo login credentials.
 
 The hash cannot be committed as a literal: argon2 salts randomly, so a hash
 written into the template once would be a fixed salt shared by every checkout.
@@ -26,17 +26,20 @@ OUTPUT = PROJECT_ROOT / "db" / "sql" / "seed_auth.sql"
 
 DEMO_PASSWORD = "demo1234"
 
+# Every account the template touches, and the role each must land with. The
+# eight households and two workers are seed_demo.sql's; gov1 and supplier1 are
+# the template's own. See scripts/normalize_demo_accounts.py for the numbering.
 EXPECTED = {
-    "customer@demo.com": "consumer",
-    "worker@demo.com": "worker",
-    "gov@demo.com": "government",
-    "supplier@demo.com": "supplier",
+    **{f"consumer{n}@demo.com": "consumer" for n in range(1, 9)},
+    **{f"worker{n}@demo.com": "worker" for n in range(1, 3)},
+    "gov1@demo.com": "government",
+    "supplier1@demo.com": "supplier",
 }
 
 
 def render() -> str:
-    # One hash for all four accounts: they share a password, and four separate
-    # hashes of the same string would only imply a distinction that isn't there.
+    # One hash for every account: they share a password, and separate hashes of
+    # the same string would only imply a distinction that isn't there.
     digest = PasswordHasher().hash(DEMO_PASSWORD)
     sql = TEMPLATE.read_text(encoding="utf-8").replace("__HASH__", digest)
     OUTPUT.write_text(sql, encoding="utf-8")
@@ -73,7 +76,7 @@ async def apply(sql: str) -> int:
         for e in wrong:
             print(f"  WRONG ROLE {e}: {found[e]} != {EXPECTED[e]}", file=sys.stderr)
         return 1
-    print(f"\n  password for all four: {DEMO_PASSWORD}")
+    print(f"\n  password for all {len(EXPECTED)}: {DEMO_PASSWORD}")
     return 0
 
 

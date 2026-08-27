@@ -706,9 +706,9 @@ export type AgreementDecision = "active" | "terminated";
 // ---------------------------------------------------------------------------
 
 /**
- * `consumer` is the customer portal's role. The schema's word for a household
- * is `consumer` and the enum predates the portal naming, so the API keeps it
- * rather than migrating a live enum for cosmetics.
+ * `consumer` is the consumer portal's role, and the schema's own word for a
+ * household -- the portal was called "customer" until 2026-08-27, which is
+ * gone from the UI and the routes but survives in verification notes.
  */
 export type Role = "consumer" | "worker" | "government" | "supplier" | "admin";
 
@@ -776,7 +776,7 @@ export interface RegisterBase {
  * sign-up. A household claims an existing connection afterwards with
  * `claimSite`, or builds a new one through the onboarding wizard.
  */
-export interface CustomerRegisterBody extends RegisterBase {
+export interface ConsumerRegisterBody extends RegisterBase {
   phone?: string | null;
 }
 
@@ -882,7 +882,7 @@ export interface AreaStats {
 }
 
 // ---------------------------------------------------------------------------
-// Onboarding -- a customer with no site building one from scratch.
+// Onboarding -- a consumer with no site building one from scratch.
 // ---------------------------------------------------------------------------
 
 export type ConnectionType = "residential" | "commercial" | "industrial";
@@ -1213,8 +1213,8 @@ export const api = {
 
   me: () => request<Account>("/auth/me"),
 
-  registerCustomer: (body: CustomerRegisterBody) =>
-    request<TokenResponse>("/auth/register/customer", {
+  registerConsumer: (body: ConsumerRegisterBody) =>
+    request<TokenResponse>("/auth/register/consumer", {
       method: "POST",
       body: JSON.stringify(body),
     }),

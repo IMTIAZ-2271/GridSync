@@ -6,8 +6,13 @@
 -- 90 days of 30-minute readings, one TOU plan, plus workers, issues and
 -- work orders.
 --
+-- Accounts are numbered rather than named: consumer1..consumer8@demo.com and
+-- worker1..worker2@demo.com, each with a role-prefixed National ID. Sign-in
+-- passwords are not set here -- db/sql/seed_auth.sql does that, for all ten.
+--
 -- Reproducible: setseed() is called before any random().
--- Safe to re-run: drops its own rows first, by the 'seed-' / 'SEED-' prefixes.
+-- Safe to re-run: drops its own rows first, by the 'Seed ' / 'SEED-' prefixes
+-- and by the ten account addresses it writes.
 
 BEGIN;
 
@@ -37,7 +42,14 @@ DELETE FROM bill WHERE site_id IN
 DELETE FROM billing_period WHERE site_id IN
   (SELECT site_id FROM site WHERE label LIKE 'Seed %');
 DELETE FROM site WHERE label LIKE 'Seed %';
-DELETE FROM account WHERE email LIKE 'seed-%@gridsync.test';
+-- Exactly the ten addresses this file writes, not a prefix match: the demo
+-- estate numbers every account consumerN / workerN, and the ones past the
+-- seed's own range were registered through the app and are not its to drop.
+DELETE FROM account WHERE email IN (
+    SELECT format('consumer%s@demo.com', n) FROM generate_series(1, 8) AS n
+    UNION ALL
+    SELECT format('worker%s@demo.com', n) FROM generate_series(1, 2) AS n
+);
 DELETE FROM tariff_plan WHERE code = 'SEED-TOU-RES';
 
 -- ---------------------------------------------------------------------------
@@ -95,13 +107,19 @@ SELECT n, CASE WHEN n <= 5 THEN (2.5 + n * 0.75)::numeric(8,3) ELSE 0 END
 FROM generate_series(1, 8) AS n;
 
 WITH new_accounts AS (
-    INSERT INTO account (email, password_hash, full_name, phone, role, status)
-    SELECT format('seed-resident-%s@gridsync.test', s.n),
+    INSERT INTO account (email, password_hash, full_name, phone, national_id,
+                         role, status)
+    SELECT format('consumer%s@demo.com', s.n),
            '$argon2id$seed$notarealhash',
-           (ARRAY['Ayesha Rahman','Tanvir Hossain','Nusrat Jahan',
-                  'Rafiul Karim','Sadia Chowdhury','Imran Hoque',
-                  'Farzana Akter','Shakib Mahmud'])[s.n],
+           -- The name follows the address, so the two cannot drift: every
+           -- screen that identifies an account by name and every one that
+           -- identifies it by email agree on which demo account it is.
+           format('Consumer %s', s.n),
            format('+8801%s000%s', 700 + s.n, s.n),
+           -- Ten digits, the shape registration accepts, with the leading 1
+           -- naming the role: consumers are 1_000_000_0NN, workers 2_, the
+           -- regulator 3_, suppliers 4_. See scripts/normalize_demo_accounts.py.
+           (1000000000 + s.n)::text,
            'consumer', 'active'
     FROM seed_site s
     ORDER BY s.n
@@ -110,7 +128,7 @@ WITH new_accounts AS (
 UPDATE seed_site s
 SET account_id = a.account_id
 FROM new_accounts a
-WHERE a.email = format('seed-resident-%s@gridsync.test', s.n);
+WHERE a.email = format('consumer%s@demo.com', s.n);
 
 WITH new_sites AS (
     INSERT INTO site (
@@ -265,12 +283,13 @@ WHERE s.capacity_kw = 0;
 -- ---------------------------------------------------------------------------
 -- Field workers.
 -- ---------------------------------------------------------------------------
-INSERT INTO account (email, password_hash, full_name, phone, role, status)
+INSERT INTO account (email, password_hash, full_name, phone, national_id,
+                     role, status)
 VALUES
-  ('seed-worker-1@gridsync.test', '$argon2id$seed$notarealhash',
-   'Kamrul Islam', '+8801711000001', 'worker', 'active'),
-  ('seed-worker-2@gridsync.test', '$argon2id$seed$notarealhash',
-   'Rubel Ahmed',  '+8801711000002', 'worker', 'active');
+  ('worker1@demo.com', '$argon2id$seed$notarealhash',
+   'Worker 1', '+8801711000001', '2000000001', 'worker', 'active'),
+  ('worker2@demo.com', '$argon2id$seed$notarealhash',
+   'Worker 2', '+8801711000002', '2000000002', 'worker', 'active');
 
 -- service_district is a foreign key to `district` since migration
 -- e7c4b19a2d83, so these are real districts rather than the 'Dhaka North' /
@@ -281,15 +300,15 @@ VALUES
 INSERT INTO worker_profile (account_id, employee_code, service_district,
                             max_daily_jobs, availability, hired_on)
 SELECT a.account_id,
-       CASE a.email WHEN 'seed-worker-1@gridsync.test'
+       CASE a.email WHEN 'worker1@demo.com'
             THEN 'SEED-EMP-001' ELSE 'SEED-EMP-002' END,
-       CASE a.email WHEN 'seed-worker-1@gridsync.test'
+       CASE a.email WHEN 'worker1@demo.com'
             THEN 'Gulshan' ELSE 'Dhanmondi' END,
        5,
        'available',
        (CURRENT_DATE - INTERVAL '3 years')::date
 FROM account a
-WHERE a.email IN ('seed-worker-1@gridsync.test', 'seed-worker-2@gridsync.test');
+WHERE a.email IN ('worker1@demo.com', 'worker2@demo.com');
 
 INSERT INTO worker_skill (account_id, skill_type, proficiency, certified_on)
 SELECT w.account_id, sk.skill_type::worker_skill_type, 'expert',
@@ -297,7 +316,7 @@ SELECT w.account_id, sk.skill_type::worker_skill_type, 'expert',
 FROM worker_profile w
 JOIN account a ON a.account_id = w.account_id
 CROSS JOIN (VALUES ('meter_install'), ('meter_swap'), ('inspection')) AS sk(skill_type)
-WHERE a.email LIKE 'seed-worker-%@gridsync.test';
+WHERE a.email IN ('worker1@demo.com', 'worker2@demo.com');
 
 -- ---------------------------------------------------------------------------
 -- Ingest batches: one per device, so device_reading.ingest_batch_id is real.
@@ -441,7 +460,7 @@ JOIN seed_site s ON s.n = v.n;
 INSERT INTO issue_comment (issue_id, comment_id, author_account_id, body,
                            is_internal, created_at)
 SELECT i.issue_id, 1, i.reported_by_account_id,
-       'Reported via the customer portal.', false, i.reported_at
+       'Reported via the consumer portal.', false, i.reported_at
 FROM issue i
 WHERE i.site_id IN (SELECT site_id FROM seed_site);
 
@@ -454,7 +473,7 @@ FROM issue i
 CROSS JOIN LATERAL (
     SELECT wp.account_id FROM worker_profile wp
     JOIN account a ON a.account_id = wp.account_id
-    WHERE a.email = 'seed-worker-1@gridsync.test'
+    WHERE a.email = 'worker1@demo.com'
 ) AS w
 WHERE i.site_id IN (SELECT site_id FROM seed_site)
   AND i.status <> 'open';
@@ -468,7 +487,7 @@ CREATE TEMP TABLE seed_order (n int, order_id uuid) ON COMMIT DROP;
 
 WITH creator AS (
     SELECT account_id FROM account
-    WHERE email = 'seed-worker-1@gridsync.test'
+    WHERE email = 'worker1@demo.com'
 ),
 targets AS (
     SELECT v.n, v.order_type, v.status, v.priority, v.link_issue,
@@ -526,7 +545,7 @@ FROM seed_order o
 CROSS JOIN LATERAL (
     SELECT wp.account_id FROM worker_profile wp
     JOIN account a ON a.account_id = wp.account_id
-    WHERE a.email = 'seed-worker-1@gridsync.test'
+    WHERE a.email = 'worker1@demo.com'
 ) AS w;
 
 INSERT INTO work_order_assignment (order_id, account_id, job_role, status,
@@ -539,7 +558,7 @@ FROM seed_order o
 CROSS JOIN LATERAL (
     SELECT wp.account_id FROM worker_profile wp
     JOIN account a ON a.account_id = wp.account_id
-    WHERE a.email = 'seed-worker-2@gridsync.test'
+    WHERE a.email = 'worker2@demo.com'
 ) AS w
 WHERE o.n IN (2, 3, 4);
 

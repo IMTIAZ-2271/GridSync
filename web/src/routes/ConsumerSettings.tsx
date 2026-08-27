@@ -17,7 +17,7 @@ import { Card, CardHeader } from "../components/ui";
  * doing; a budget they set once and change rarely is a setting, and requirement
  * 5 and requirement 12 are the same screen for that reason.
  */
-export default function CustomerSettings() {
+export default function ConsumerSettings() {
   const { account } = useAuth();
   const { siteId, site, sites } = useSelectedSite();
 
@@ -58,7 +58,7 @@ export default function CustomerSettings() {
           <p>
             Billing meters, solar arrays and everything else attached to a site
             are managed on the{" "}
-            <Link to="/customer/meters" className="font-medium underline">
+            <Link to="/consumer/meters" className="font-medium underline">
               Meters
             </Link>{" "}
             page. Each connection is billed on its own and keeps its own credit

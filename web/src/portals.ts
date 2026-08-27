@@ -9,7 +9,7 @@
  * to hang the role each portal requires, and the API is where it gets checked.
  */
 
-export type PortalId = "customer" | "worker" | "government" | "supplier";
+export type PortalId = "consumer" | "worker" | "government" | "supplier";
 
 export interface PortalRoute {
   path: string;
@@ -30,11 +30,11 @@ export interface Portal {
 
 export const PORTALS: Portal[] = [
   {
-    id: "customer",
-    label: "Customer",
+    id: "consumer",
+    label: "Consumer",
     blurb: "A household's own consumption, generation, bills and credit balance.",
-    accent: "bg-portal-customer",
-    base: "/customer",
+    accent: "bg-portal-consumer",
+    base: "/consumer",
     routes: [
       { path: "", label: "Overview" },
       { path: "meters", label: "Meters" },

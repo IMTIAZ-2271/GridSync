@@ -1,4 +1,4 @@
--- Demo login accounts, one per role. GENERATED -- see scripts/seed_auth.py.
+-- Demo login credentials. GENERATED -- see scripts/seed_auth.py.
 --
 -- Not a migration, for two reasons. It writes rows with role 'government' and
 -- 'supplier', and Postgres will not let a transaction use enum values that the
@@ -6,54 +6,44 @@
 -- credentials are seed data, not schema -- a deployment that is not this demo
 -- must be able to skip this file entirely.
 --
--- Password for all four: demo1234
+-- Password for every account here: demo1234
 --
--- Customer and worker CLAIM existing seeded accounts rather than creating new
--- ones, because those accounts already own the data the demo needs to show:
+-- The eight households and two field workers already exist: seed_demo.sql
+-- creates them, numbered, with a placeholder hash that no password matches.
+-- This file replaces that hash, so every seeded account can actually be signed
+-- into. It used to do so for one household and one worker only, which left the
+-- richest six households in the estate impossible to demonstrate.
 --
---   * Ayesha Rahman owns Seed Site 01 -- solar, two bills, a credit balance
---     and one open issue. Creating a new account and transferring the site
---     would work (that is what customer registration does), but claiming in
---     place also keeps the issue she reported attributed to her.
---   * Kamrul Islam is SEED-EMP-001 with six work-order assignments and three
---     skills, all of which reference worker_profile(account_id) -- which is
---     his account's primary key. Only claiming in place preserves them.
+-- The regulator and the supplier are created here rather than claimed: they
+-- read the whole fleet and have no per-account data to inherit. Both get the
+-- role-prefixed National ID scheme the rest of the estate uses --
+-- 1_000_000_0NN consumer, 2_ worker, 3_ government, 4_ supplier -- and the
+-- matching numbered full name, so a screen that identifies an account by name
+-- names the same account as one that identifies it by address.
 --
--- Government and supplier are new accounts; they read the whole fleet and have
--- no per-account data to inherit.
---
--- Idempotent: re-running overwrites the same four accounts and claims nothing
--- new. Safe to apply repeatedly.
+-- Idempotent: re-running overwrites the same accounts and claims nothing new.
 
 BEGIN;
 
--- Customer: Ayesha Rahman, Seed Site 01 (Dhanmondi, solar).
+-- The eight households and two workers seed_demo.sql created.
 UPDATE account
-SET email = 'customer@demo.com',
-    password_hash = '__HASH__',
+SET password_hash = '__HASH__',
     updated_at = now()
-WHERE account_id = (
-    SELECT s.account_id FROM site s WHERE s.label = 'Seed Site 01'
+WHERE email IN (
+    SELECT format('consumer%s@demo.com', n) FROM generate_series(1, 8) AS n
+    UNION ALL
+    SELECT format('worker%s@demo.com', n) FROM generate_series(1, 2) AS n
 );
 
--- Worker: Kamrul Islam, employee SEED-EMP-001.
-UPDATE account
-SET email = 'worker@demo.com',
-    password_hash = '__HASH__',
-    updated_at = now()
-WHERE account_id = (
-    SELECT wp.account_id FROM worker_profile wp
-    WHERE wp.employee_code = 'SEED-EMP-001'
-);
-
--- Government and supplier: created, not claimed.
-INSERT INTO account (email, password_hash, full_name, role, status)
+-- Regulator and supplier: created, not claimed.
+INSERT INTO account (email, password_hash, full_name, national_id, role, status)
 VALUES
-    ('gov@demo.com',      '__HASH__', 'Regulator Demo', 'government', 'active'),
-    ('supplier@demo.com', '__HASH__', 'Utility Demo',   'supplier',   'active')
+    ('gov1@demo.com',      '__HASH__', 'Gov 1',      '3000000001', 'government', 'active'),
+    ('supplier1@demo.com', '__HASH__', 'Supplier 1', '4000000001', 'supplier',   'active')
 ON CONFLICT (email) DO UPDATE
 SET password_hash = EXCLUDED.password_hash,
     full_name     = EXCLUDED.full_name,
+    national_id   = EXCLUDED.national_id,
     role          = EXCLUDED.role,
     status        = 'active',
     updated_at    = now();

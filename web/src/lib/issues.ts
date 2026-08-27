@@ -1,7 +1,7 @@
 /**
  * Shared issue vocabulary.
  *
- * Two portals read the same `issue` rows from different ends -- a customer
+ * Two portals read the same `issue` rows from different ends -- a consumer
  * files and watches their own, a worker triages every issue on the sites they
  * cover. Both need the same enum labels and the same badge tones, and two
  * copies would eventually disagree about what "medium" looks like or what

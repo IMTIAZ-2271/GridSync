@@ -17,9 +17,9 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { setToken } from "./src/lib/api.ts";
-import CustomerOverview from "./src/routes/CustomerOverview.tsx";
-import CustomerBills from "./src/routes/CustomerBills.tsx";
-import CustomerIssues from "./src/routes/CustomerIssues.tsx";
+import ConsumerOverview from "./src/routes/ConsumerOverview.tsx";
+import ConsumerBills from "./src/routes/ConsumerBills.tsx";
+import ConsumerIssues from "./src/routes/ConsumerIssues.tsx";
 import WorkerOrders from "./src/routes/WorkerOrders.tsx";
 import GovernmentAgreements from "./src/routes/GovernmentAgreements.tsx";
 import SupplierSites from "./src/routes/SupplierSites.tsx";
@@ -60,8 +60,8 @@ function strip(html) {
 
 const CASES = [
   {
-    email: "customer@demo.com",
-    pages: { CustomerOverview, CustomerBills, CustomerIssues },
+    email: "consumer1@demo.com",
+    pages: { ConsumerOverview, ConsumerBills, ConsumerIssues },
     async prime(qc) {
       const sites = await get("/sites");
       const id = sites[0].site_id;
@@ -74,7 +74,7 @@ const CASES = [
     },
   },
   {
-    email: "worker@demo.com",
+    email: "worker1@demo.com",
     pages: { WorkerOrders },
     async prime(qc) {
       const wos = await get("/work-orders");
@@ -84,7 +84,7 @@ const CASES = [
     },
   },
   {
-    email: "gov@demo.com",
+    email: "gov1@demo.com",
     pages: { GovernmentAgreements },
     async prime(qc) {
       const pend = await get("/agreements/pending");
@@ -94,7 +94,7 @@ const CASES = [
     },
   },
   {
-    email: "supplier@demo.com",
+    email: "supplier1@demo.com",
     pages: { SupplierSites },
     async prime(qc) {
       const sites = await get("/sites");

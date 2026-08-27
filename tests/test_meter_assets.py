@@ -1,6 +1,6 @@
 """A meter belongs to a person before it belongs to a site.
 
-Migration c9e2f4a71b83 split "hardware the utility issued to a customer"
+Migration c9e2f4a71b83 split "hardware the utility issued to a consumer"
 (`meter_asset`) from "hardware installed somewhere" (`device`), because a
 household registering a meter by typing a serial number could conjure hardware
 nobody owns.

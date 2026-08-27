@@ -34,7 +34,7 @@ const AuthContext = createContext<AuthState | null>(null);
 
 /** Where each role lands after signing in. */
 export const HOME_FOR_ROLE: Record<Role, string> = {
-  consumer: "/customer",
+  consumer: "/consumer",
   worker: "/worker",
   government: "/government",
   supplier: "/supplier",
@@ -123,7 +123,7 @@ export function useAuth(): AuthState {
 }
 
 export const ROLE_LABEL: Record<Role, string> = {
-  consumer: "Customer",
+  consumer: "Consumer",
   worker: "Field worker",
   government: "Regulator",
   supplier: "Utility",

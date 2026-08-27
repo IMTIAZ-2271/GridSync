@@ -61,9 +61,9 @@ export default function ArrayHealthCard({ siteId }: { siteId: string }) {
         </ul>
       )}
       <p className="border-t border-hairline px-5 py-3 text-xs text-ink-muted">
-        Individual panels are not monitored, and cannot be: your inverter
-        reports one figure for the whole array. A drop in output per kW is the
-        signal that something on the roof needs looking at.
+        Your inverter reports one figure for the whole array, so panels are not
+        monitored individually. A drop in output per kW is the sign that
+        something on the roof needs looking at.
       </p>
     </Card>
   );

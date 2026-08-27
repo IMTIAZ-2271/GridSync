@@ -39,7 +39,7 @@ import {
  * and the rows are sorted by export -- a magnitude comparison reads as a
  * ranking or it does not read at all.
  *
- * Import and export wear the same two colours here as on the customer's own
+ * Import and export wear the same two colours here as on the consumer's own
  * chart. Colour follows the entity, never the view: a reader who has learned
  * that orange is "sent to the grid" must not have to relearn it one portal
  * over. (Slots validated as a pair against this surface: worst CVD dE 24.7,
@@ -165,7 +165,7 @@ export default function GovernmentByArea() {
       <Card>
         <CardHeader
           title="Import against export, by district"
-          subtitle="All recorded telemetry, in kWh. Sorted by export."
+          subtitle="Recorded import and export, in kWh. Sorted by export."
         />
         <div className="p-5">
           {areas.isPending ? (
@@ -183,7 +183,7 @@ export default function GovernmentByArea() {
       <Card>
         <CardHeader
           title="Districts"
-          subtitle="The same figures, exactly as stored."
+          subtitle="The same figures, in full."
         />
         {areas.isPending ? (
           <div className="space-y-3 p-5">

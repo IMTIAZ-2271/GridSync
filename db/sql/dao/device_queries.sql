@@ -21,7 +21,7 @@
 -- the whole fleet.
 --
 -- $1 is the site filter: a uuid narrows to that site, NULL returns every
--- device on every site. One statement rather than two because the customer's
+-- device on every site. One statement rather than two because the consumer's
 -- equipment page and the supplier's fleet inventory ask exactly the same
 -- question at different scopes, and two copies of this arithmetic would
 -- eventually disagree about what "degraded" means. The caller decides scope;
@@ -192,7 +192,7 @@ LEFT JOIN LATERAL (
     WHERE sa.inverter_device_id = m.device_id
       AND sa.status <> 'decommissioned'
 ) arr ON true
--- Billing meter first: it is the device whose silence costs the customer
+-- Billing meter first: it is the device whose silence costs the consumer
 -- money, so it should never be something the reader has to scroll for.
 ORDER BY m.site_label,
          (ms.billing_role = 'billing') DESC NULLS LAST,

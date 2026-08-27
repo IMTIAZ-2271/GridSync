@@ -224,8 +224,7 @@ function WorkerRow({
             />
           </label>
           <p className="text-xs text-ink-muted">
-            This is sent to the applicant. A rejection they cannot act on is
-            worse than no answer.
+            This is sent to the applicant.
           </p>
           <div className="flex items-center gap-3">
             <button

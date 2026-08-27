@@ -1,7 +1,7 @@
 /**
  * Shared device-health vocabulary.
  *
- * The customer sees the equipment on their own site; the supplier sees every
+ * The consumer sees the equipment on their own site; the supplier sees every
  * device in the fleet. Both read the same `health` verdict off the same query
  * (`device_health` in db/sql/dao/device_queries.sql), so both must call it the
  * same thing. The verdict itself is never computed here -- it arrives already

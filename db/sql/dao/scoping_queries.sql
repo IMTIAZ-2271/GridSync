@@ -54,7 +54,7 @@ LIMIT 1;
 
 
 -- name: issues_for_account
--- A customer's own issues: everything reported against a site they own.
+-- A consumer's own issues: everything reported against a site they own.
 -- Keyed on site rather than on reported_by_account_id, so a fault the previous
 -- owner reported still reaches the person now living with it.
 SELECT i.issue_id,

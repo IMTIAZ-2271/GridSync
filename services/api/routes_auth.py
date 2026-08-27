@@ -110,7 +110,7 @@ class RegisterBase(BaseModel):
     national_id: str = Field(min_length=6, max_length=32)
 
 
-class CustomerRegisterIn(RegisterBase):
+class ConsumerRegisterIn(RegisterBase):
     phone: str | None = Field(default=None, max_length=40)
 
 
@@ -283,16 +283,16 @@ async def _new_account(
 
 
 @router.post(
-    "/register/customer",
+    "/register/consumer",
     response_model=TokenOut,
     status_code=status.HTTP_201_CREATED,
 )
-async def register_customer(conn: Conn, payload: CustomerRegisterIn) -> TokenOut:
+async def register_consumer(conn: Conn, payload: ConsumerRegisterIn) -> TokenOut:
     """Register a household.
 
     Consumer requirements 1 and 2: a National ID is required, and a billing
     meter ID is **not** asked for here. Registration creates the account and
-    stops. The customer portal detects the empty site list and walks them
+    stops. The consumer portal detects the empty site list and walks them
     through building a service point (POST /api/sites, then /meter, then
     optionally /solar, then /bill), and adding more billing meters later is
     the same /meter call again.

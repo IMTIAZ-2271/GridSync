@@ -509,7 +509,7 @@ async def test_every_month_in_the_window_exists_afterwards(conn):
 
 
 async def test_the_household_is_told_when_a_visit_is_not_started(conn):
-    """Worker requirement 5 names the customer as well as the supplier.
+    """Worker requirement 5 names the consumer as well as the supplier.
 
     They are the party who has been waiting in, so a job that silently goes back
     into the queue is exactly the thing they need telling about.
