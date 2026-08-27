@@ -14,38 +14,31 @@
 -- into. It used to do so for one household and one worker only, which left the
 -- richest six households in the estate impossible to demonstrate.
 --
--- The regulator and the supplier are created here rather than claimed: they
--- read the whole fleet and have no per-account data to inherit. Both get the
--- role-prefixed National ID scheme the rest of the estate uses --
--- 1_000_000_0NN consumer, 2_ worker, 3_ government, 4_ supplier -- and the
--- matching numbered full name, so a screen that identifies an account by name
--- names the same account as one that identifies it by address.
+-- Staff are no longer created here. They were, back when the estate was one
+-- regulator and one supplier with nothing behind them; now the roster in
+-- db/sql/seed_orgs.sql owns who exists and which district or firm they belong
+-- to, and this file owns only the credential. Splitting them is what lets
+-- seed_orgs.sql be re-run to restaff a database without touching a password.
 --
 -- Idempotent: re-running overwrites the same accounts and claims nothing new.
 
 BEGIN;
 
--- The eight households and two workers seed_demo.sql created.
+-- Every demo account: the eight households seed_demo.sql creates, and the ten
+-- technicians, three officials and five installer staff db/sql/seed_orgs.sql
+-- creates. All of them land with the placeholder hash that no password
+-- matches; this is the file that makes them signable-into.
 UPDATE account
 SET password_hash = '__HASH__',
     updated_at = now()
 WHERE email IN (
     SELECT format('consumer%s@demo.com', n) FROM generate_series(1, 8) AS n
     UNION ALL
-    SELECT format('worker%s@demo.com', n) FROM generate_series(1, 2) AS n
+    SELECT format('worker%s@demo.com', n) FROM generate_series(1, 10) AS n
+    UNION ALL
+    SELECT format('gov%s@demo.com', n) FROM generate_series(1, 3) AS n
+    UNION ALL
+    SELECT format('supplier%s@demo.com', n) FROM generate_series(1, 5) AS n
 );
-
--- Regulator and supplier: created, not claimed.
-INSERT INTO account (email, password_hash, full_name, national_id, role, status)
-VALUES
-    ('gov1@demo.com',      '__HASH__', 'Gov 1',      '3000000001', 'government', 'active'),
-    ('supplier1@demo.com', '__HASH__', 'Supplier 1', '4000000001', 'supplier',   'active')
-ON CONFLICT (email) DO UPDATE
-SET password_hash = EXCLUDED.password_hash,
-    full_name     = EXCLUDED.full_name,
-    national_id   = EXCLUDED.national_id,
-    role          = EXCLUDED.role,
-    status        = 'active',
-    updated_at    = now();
 
 COMMIT;

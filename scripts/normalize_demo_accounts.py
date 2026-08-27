@@ -88,11 +88,18 @@ PLAN: list[tuple[str, str, int]] = [
     # same two people a from-scratch `seed_demo.sql` produces.
     ("worker@demo.com", "worker", 1),          # SEED-EMP-001, six assignments
     ("rakib123@gmail.com", "worker", 2),       # SEED-EMP-002
-    ("worker2@demo.com", "worker", 3),         # W-4E476FFF, Badda
-    ("worker3@demo.com", "worker", 4),         # W-5ABAD209, Banani
+    ("worker2@demo.com", "worker", 3),         # W-4E476FFF
+    ("worker3@demo.com", "worker", 4),         # W-5ABAD209
+    # Technicians 5-10, officials 3 and installer staff 2-5 are created by
+    # db/sql/seed_orgs.sql already numbered, so they only ever match on their
+    # target address. They are listed so the "unplanned account" check below
+    # stays a real check rather than something to keep widening.
+    *[(f"worker{n}@demo.com", "worker", n) for n in range(5, 11)],
     ("gov@demo.com", "government", 1),         # Badda
-    ("gov2@demo.com", "government", 2),        # Gulshan
+    ("gov2@demo.com", "government", 2),        # Dhanmondi
+    ("gov3@demo.com", "government", 3),        # Uttara
     ("supplier@demo.com", "supplier", 1),      # Noor Energy Systems
+    *[(f"supplier{n}@demo.com", "supplier", n) for n in range(2, 6)],
 ]
 
 PREFIX = {"consumer": "consumer", "worker": "worker",

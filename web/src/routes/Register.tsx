@@ -9,7 +9,7 @@ import {
   type WorkerKind,
 } from "../lib/api";
 import { HOME_FOR_ROLE, useAuth } from "../auth/AuthContext";
-import { AuthShell, FIELD, SubmitButton } from "../components/AuthShell";
+import { AuthShell, FIELD, LABEL, SubmitButton } from "../components/AuthShell";
 
 /**
  * Registration, by role.
@@ -193,7 +193,7 @@ export default function Register() {
       footer={
         <>
           Already registered?{" "}
-          <Link to="/login" className="font-medium text-series-import hover:underline">
+          <Link to="/login" className="font-medium text-series-import underline-offset-4 transition-colors hover:underline">
             Sign in
           </Link>
         </>
@@ -212,7 +212,7 @@ export default function Register() {
             aria-selected={tab === t.id}
             onClick={() => switchTab(t.id)}
             className={[
-              "flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              "flex-1 rounded-md px-3 py-2 text-[14px] font-medium transition-colors",
               tab === t.id ? `${t.accent} text-white` : "text-ink-2 hover:bg-hairline/60",
             ].join(" ")}
           >
@@ -221,7 +221,7 @@ export default function Register() {
         ))}
       </div>
 
-      <p className="mt-4 text-sm text-ink-2">{BLURB[tab]}</p>
+      <p className="mt-4 text-[14px] text-ink-2">{BLURB[tab]}</p>
 
       <form onSubmit={submit} className="mt-6 space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
@@ -291,7 +291,7 @@ export default function Register() {
         {tab === "worker" && (
           <>
             <fieldset>
-              <legend className="text-xs font-medium text-ink-2">
+              <legend className={LABEL}>
                 Which kind of worker are you?
               </legend>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -369,7 +369,7 @@ export default function Register() {
             </div>
 
             {workerKind === "government" && (
-              <p className="rounded-md bg-plane px-3 py-2 text-xs text-ink-2">
+              <p className="rounded-md bg-plane px-3 py-2 text-[14px] leading-relaxed text-ink-2">
                 Your registration is sent to the government officials for
                 {district ? ` ${district}` : " your region"}. You can sign in
                 straight away, but work orders only start arriving once it is
@@ -428,7 +428,7 @@ export default function Register() {
         )}
 
         {error && (
-          <p className="rounded-md bg-status-critical/10 px-3 py-2 text-xs text-status-critical">
+          <p className="rounded-lg border border-status-critical/20 bg-status-critical/8 px-3.5 py-2.5 text-[14px] leading-relaxed text-status-critical">
             {error}
           </p>
         )}
@@ -458,12 +458,12 @@ function Field({
 }) {
   return (
     <div>
-      <label htmlFor={id} className="text-xs font-medium text-ink-2">
+      <label htmlFor={id} className={LABEL}>
         {label}
         {optional && <span className="text-ink-muted"> (optional)</span>}
       </label>
       {children}
-      {hint && <p className="mt-1 text-xs text-ink-muted">{hint}</p>}
+      {hint && <p className="mt-1.5 text-[14px] text-ink-2">{hint}</p>}
     </div>
   );
 }
@@ -495,8 +495,8 @@ function KindOption({
           : "border-hairline hover:bg-hairline/40",
       ].join(" ")}
     >
-      <span className="block text-sm font-medium text-ink-1">{title}</span>
-      <span className="mt-0.5 block text-xs text-ink-2">{detail}</span>
+      <span className="block text-[14px] font-medium text-ink-1">{title}</span>
+      <span className="mt-1 block text-[14px] text-ink-2">{detail}</span>
     </button>
   );
 }

@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { PORTALS } from "../portals";
 import { ROLE_LABEL, useAuth } from "../auth/AuthContext";
 import { portalsForRole } from "../auth/RequireAuth";
+import Logo from "./Logo";
 import NotificationBell from "./NotificationBell";
 import SitePicker from "./SitePicker";
 
@@ -25,7 +26,10 @@ export default function Layout() {
     <div className="flex min-h-full flex-col bg-plane text-ink">
       <header className="border-b border-hairline bg-surface">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-3 px-6 py-3">
-          <span className="text-lg font-semibold tracking-tight">GridSync</span>
+          <span className="flex items-center gap-2.5">
+            <Logo className="h-7 w-7" />
+            <span className="text-lg font-semibold tracking-tight">GridSync</span>
+          </span>
 
           {available.length > 1 && (
             <nav className="flex gap-1" aria-label="Portal">

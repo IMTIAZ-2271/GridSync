@@ -7,6 +7,9 @@ This renders the template with a freshly derived hash and applies it.
     python scripts/seed_auth.py            # render and apply
     python scripts/seed_auth.py --render   # render only, print the path
 
+Run after db/sql/seed_orgs.sql -- that is what creates the staff accounts
+this file sets a password on.
+
 Requires DATABASE_URL in .env and migration b3f1c9d4a7e2 applied.
 """
 from __future__ import annotations
@@ -27,13 +30,15 @@ OUTPUT = PROJECT_ROOT / "db" / "sql" / "seed_auth.sql"
 DEMO_PASSWORD = "demo1234"
 
 # Every account the template touches, and the role each must land with. The
-# eight households and two workers are seed_demo.sql's; gov1 and supplier1 are
-# the template's own. See scripts/normalize_demo_accounts.py for the numbering.
+# eight households come from seed_demo.sql; the ten technicians, three
+# officials and five installer staff come from db/sql/seed_orgs.sql, which is
+# also where their district and firm are decided. See
+# scripts/normalize_demo_accounts.py for the numbering.
 EXPECTED = {
     **{f"consumer{n}@demo.com": "consumer" for n in range(1, 9)},
-    **{f"worker{n}@demo.com": "worker" for n in range(1, 3)},
-    "gov1@demo.com": "government",
-    "supplier1@demo.com": "supplier",
+    **{f"worker{n}@demo.com": "worker" for n in range(1, 11)},
+    **{f"gov{n}@demo.com": "government" for n in range(1, 4)},
+    **{f"supplier{n}@demo.com": "supplier" for n in range(1, 6)},
 }
 
 

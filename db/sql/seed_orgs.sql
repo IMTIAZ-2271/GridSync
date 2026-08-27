@@ -110,6 +110,204 @@ WHERE d.is_selectable
 ON CONFLICT (code) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
+-- Coverage: three districts, and the staff who can actually serve them.
+--
+-- An official governs exactly ONE district (their code carries it), so three
+-- officials can cover three districts and no more. That single fact decides
+-- the shape of the whole estate: every consumer site lives in Badda,
+-- Dhanmondi or Uttara, and the other five canonical districts are marked
+-- NOT selectable so nothing new can be filed where nobody is on duty.
+--
+-- This is the mechanism migration e7c4b19a2d83 already built for the legacy
+-- free-text districts, used for its other purpose: a non-selectable district
+-- stays joinable, so the regulator's rollup keeps reporting any history filed
+-- under it, but no registration, onboarding wizard or meter application can
+-- choose one. Re-select a district here the day it gets an official.
+--
+-- The three were not picked arbitrarily. Badda is served by BOTH utilities
+-- (which is the only reason requirement 6's dropdown is a choice at all),
+-- Dhanmondi is DPDC-only and Uttara is DESCO-only, so the estate exercises
+-- every branch. All four installers keep work: Noor covers all three, Solaris
+-- Badda, Rahima Dhanmondi, Padma Uttara.
+-- ---------------------------------------------------------------------------
+UPDATE district
+SET is_selectable = (name IN ('Badda', 'Dhanmondi', 'Uttara'))
+WHERE name IN (
+    'Badda', 'Banani', 'Bashundhara', 'Dhanmondi',
+    'Gulshan', 'Mirpur', 'Mohammadpur', 'Uttara'
+);
+
+-- The roster. One table drives the accounts, the profiles and the checks, so
+-- a worker's district and their employer's service area cannot drift apart.
+CREATE TEMP TABLE seed_staff (
+    email          text PRIMARY KEY,
+    role           account_role NOT NULL,
+    full_name      text NOT NULL,
+    national_id    text NOT NULL,
+    district       text,          -- worker + government
+    worker_kind    worker_kind,   -- worker only
+    utility_code   text,          -- government workers only
+    employee_code  text,          -- worker only
+    supplier_code  text,          -- supplier only
+    official_code  text           -- government only
+) ON COMMIT DROP;
+
+-- Ten technicians. Four in Badda (it holds both utilities, so it is the one
+-- district where a government worker can belong to either), three each in
+-- Dhanmondi and Uttara. Every government worker's employer actually serves
+-- their district -- the same rule POST /api/auth/register/worker enforces
+-- with a 422, applied here rather than assumed.
+INSERT INTO seed_staff (email, role, full_name, national_id, district,
+                        worker_kind, utility_code, employee_code)
+VALUES
+  ('worker1@demo.com',  'worker', 'Worker 1',  '2000000001', 'Badda',     'government', 'DESCO', 'SEED-EMP-001'),
+  ('worker2@demo.com',  'worker', 'Worker 2',  '2000000002', 'Badda',     'private',    NULL,    'SEED-EMP-002'),
+  ('worker3@demo.com',  'worker', 'Worker 3',  '2000000003', 'Badda',     'government', 'DPDC',  'SEED-EMP-003'),
+  ('worker4@demo.com',  'worker', 'Worker 4',  '2000000004', 'Badda',     'private',    NULL,    'SEED-EMP-004'),
+  ('worker5@demo.com',  'worker', 'Worker 5',  '2000000005', 'Dhanmondi', 'government', 'DPDC',  'SEED-EMP-005'),
+  ('worker6@demo.com',  'worker', 'Worker 6',  '2000000006', 'Dhanmondi', 'private',    NULL,    'SEED-EMP-006'),
+  ('worker7@demo.com',  'worker', 'Worker 7',  '2000000007', 'Dhanmondi', 'private',    NULL,    'SEED-EMP-007'),
+  ('worker8@demo.com',  'worker', 'Worker 8',  '2000000008', 'Uttara',    'government', 'DESCO', 'SEED-EMP-008'),
+  ('worker9@demo.com',  'worker', 'Worker 9',  '2000000009', 'Uttara',    'private',    NULL,    'SEED-EMP-009'),
+  ('worker10@demo.com', 'worker', 'Worker 10', '2000000010', 'Uttara',    'private',    NULL,    'SEED-EMP-010');
+
+-- One official per covered district. The code carries the district, so these
+-- three claims are what make the three scopes real.
+INSERT INTO seed_staff (email, role, full_name, national_id, district, official_code)
+VALUES
+  ('gov1@demo.com', 'government', 'Gov 1', '3000000001', 'Badda',     'GOV-BADDA-01'),
+  ('gov2@demo.com', 'government', 'Gov 2', '3000000002', 'Dhanmondi', 'GOV-DHANMONDI-01'),
+  ('gov3@demo.com', 'government', 'Gov 3', '3000000003', 'Uttara',    'GOV-UTTARA-01');
+
+-- Five installer staff across four firms. Noor gets two logins on purpose:
+-- staff attach to a company rather than being one (docs/decisions.md), and
+-- that is only demonstrable if some firm has more than one person.
+INSERT INTO seed_staff (email, role, full_name, national_id, supplier_code)
+VALUES
+  ('supplier1@demo.com', 'supplier', 'Supplier 1', '4000000001', 'NOOR'),
+  ('supplier2@demo.com', 'supplier', 'Supplier 2', '4000000002', 'SOLARIS'),
+  ('supplier3@demo.com', 'supplier', 'Supplier 3', '4000000003', 'RAHIMA'),
+  ('supplier4@demo.com', 'supplier', 'Supplier 4', '4000000004', 'PADMA'),
+  ('supplier5@demo.com', 'supplier', 'Supplier 5', '4000000005', 'NOOR');
+
+-- A government worker's employer must serve the district they work in, and an
+-- official's code must have been issued for the district they govern. Both are
+-- assertions about this file's own data, so they are checked here rather than
+-- left to be discovered as a 409 during a demo.
+DO $$
+DECLARE bad text;
+BEGIN
+    SELECT string_agg(s.email, ', ') INTO bad
+    FROM seed_staff s
+    WHERE s.worker_kind = 'government'
+      AND NOT EXISTS (
+          SELECT 1 FROM distribution_company dc
+          JOIN distribution_company_area a ON a.company_id = dc.company_id
+          WHERE dc.code = s.utility_code AND a.district = s.district
+      );
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'government worker employed by a utility that does not serve their district: %', bad;
+    END IF;
+
+    SELECT string_agg(s.email, ', ') INTO bad
+    FROM seed_staff s
+    JOIN government_official_code c ON c.code = s.official_code
+    WHERE c.district <> s.district;
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'official code issued for a different district: %', bad;
+    END IF;
+END $$;
+
+-- Accounts. Created with the placeholder hash seed_demo.sql uses; the password
+-- for every one of them is set by scripts/seed_auth.py afterwards. An account
+-- that already exists keeps its password and gets its name and NID corrected.
+INSERT INTO account (email, password_hash, full_name, national_id, role, status)
+SELECT s.email, '$argon2id$seed$notarealhash', s.full_name, s.national_id,
+       s.role, 'active'
+FROM seed_staff s
+ON CONFLICT (email) DO UPDATE
+SET full_name   = EXCLUDED.full_name,
+    national_id = EXCLUDED.national_id,
+    role        = EXCLUDED.role,
+    status      = 'active',
+    updated_at  = now();
+
+-- Worker profiles. An existing technician keeps their employee code and their
+-- history; what moves is where they work and who they work for.
+INSERT INTO worker_profile (account_id, employee_code, service_district,
+                            max_daily_jobs, availability, hired_on,
+                            worker_kind, distribution_company_id,
+                            approval_status, approved_at)
+SELECT a.account_id, s.employee_code, s.district, 5, 'available',
+       (CURRENT_DATE - INTERVAL '3 years')::date,
+       s.worker_kind,
+       (SELECT company_id FROM distribution_company WHERE code = s.utility_code),
+       'approved', now()
+FROM seed_staff s
+JOIN account a ON a.email = s.email
+WHERE s.role = 'worker'
+ON CONFLICT (account_id) DO UPDATE
+SET service_district        = EXCLUDED.service_district,
+    worker_kind             = EXCLUDED.worker_kind,
+    distribution_company_id = EXCLUDED.distribution_company_id,
+    approval_status         = 'approved',
+    approved_at             = coalesce(worker_profile.approved_at, now()),
+    rejection_reason        = NULL,
+    availability            = 'available',
+    left_on                 = NULL;
+
+-- Every technician can do the three job types the fulfilment flow dispatches.
+INSERT INTO worker_skill (account_id, skill_type, proficiency, certified_on)
+SELECT a.account_id, sk.skill_type::worker_skill_type, 'expert',
+       (CURRENT_DATE - INTERVAL '2 years')::date
+FROM seed_staff s
+JOIN account a ON a.email = s.email
+CROSS JOIN (VALUES ('meter_install'), ('meter_swap'), ('inspection')) AS sk(skill_type)
+WHERE s.role = 'worker'
+ON CONFLICT DO NOTHING;
+
+-- Official codes: release any claim that no longer matches the roster, then
+-- claim the right one. gov2 held GOV-GULSHAN-01 before this file gave it
+-- Dhanmondi; releasing first is what lets the district move without the
+-- one-claim-per-account unique getting in the way.
+UPDATE government_official_code c
+SET claimed_by_account_id = NULL, claimed_at = NULL
+FROM account a
+WHERE c.claimed_by_account_id = a.account_id
+  AND NOT EXISTS (
+      SELECT 1 FROM seed_staff s
+      WHERE s.email = a.email::text AND s.official_code = c.code
+  );
+
+UPDATE government_official_code c
+SET claimed_by_account_id = a.account_id, claimed_at = now()
+FROM seed_staff s
+JOIN account a ON a.email = s.email
+WHERE c.code = s.official_code
+  AND c.claimed_by_account_id IS DISTINCT FROM a.account_id;
+
+INSERT INTO government_profile (account_id, district, official_code)
+SELECT a.account_id, s.district, s.official_code
+FROM seed_staff s
+JOIN account a ON a.email = s.email
+WHERE s.role = 'government'
+ON CONFLICT (account_id) DO UPDATE
+SET district      = EXCLUDED.district,
+    official_code = EXCLUDED.official_code;
+
+-- Installer staff, attached to the firm the roster names rather than to
+-- whichever one sorts first.
+INSERT INTO supplier_profile (account_id, supplier_id, job_title)
+SELECT a.account_id,
+       (SELECT supplier_id FROM supplier_company WHERE code = s.supplier_code),
+       'Dispatcher'
+FROM seed_staff s
+JOIN account a ON a.email = s.email
+WHERE s.role = 'supplier'
+ON CONFLICT (account_id) DO UPDATE
+SET supplier_id = EXCLUDED.supplier_id;
+
+-- ---------------------------------------------------------------------------
 -- Attach the organisations to the demo estate.
 --
 -- Utility by district: whichever company serves the site's district, and the
@@ -145,21 +343,6 @@ CROSS JOIN LATERAL (
 ) AS pick
 WHERE sa.site_id = s.site_id
   AND sa.installed_by_supplier_id IS NULL;
-
--- ---------------------------------------------------------------------------
--- Make one of the two demo workers a DESCO employee, so both branches of
--- worker requirement 1 are represented. The other stays private.
---
--- Ordered by employee_code so re-running picks the same worker every time.
--- ---------------------------------------------------------------------------
-UPDATE worker_profile w
-SET worker_kind = 'government',
-    distribution_company_id = (
-        SELECT company_id FROM distribution_company WHERE code = 'DESCO'
-    )
-WHERE w.account_id = (
-    SELECT account_id FROM worker_profile ORDER BY employee_code LIMIT 1
-);
 
 -- ---------------------------------------------------------------------------
 -- Give every 'government' account a government_profile.

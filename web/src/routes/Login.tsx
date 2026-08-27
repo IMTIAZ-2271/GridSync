@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { HOME_FOR_ROLE, useAuth } from "../auth/AuthContext";
-import { AuthShell, FIELD, SubmitButton } from "../components/AuthShell";
+import { AuthShell, FIELD, LABEL, SubmitButton } from "../components/AuthShell";
+import { BrandLockup } from "../components/Logo";
 
 export default function Login() {
   const { account, isLoading, signIn } = useAuth();
@@ -38,18 +39,19 @@ export default function Login() {
   return (
     <AuthShell
       title="Sign in"
+      aside={<BrandLockup size="lg" />}
       footer={
         <>
           No account yet?{" "}
-          <Link to="/register" className="font-medium text-series-import hover:underline">
+          <Link to="/register" className="font-medium text-series-import underline-offset-4 transition-colors hover:underline">
             Register
           </Link>
         </>
       }
     >
-      <form onSubmit={submit} className="space-y-4">
+      <form onSubmit={submit} className="space-y-5">
         <div>
-          <label htmlFor="email" className="text-xs font-medium text-ink-2">
+          <label htmlFor="email" className={LABEL}>
             Email
           </label>
           <input
@@ -58,13 +60,13 @@ export default function Login() {
             autoComplete="username"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className={`mt-1 ${FIELD}`}
+            className={`mt-2 ${FIELD}`}
             required
           />
         </div>
 
         <div>
-          <label htmlFor="password" className="text-xs font-medium text-ink-2">
+          <label htmlFor="password" className={LABEL}>
             Password
           </label>
           <input
@@ -73,13 +75,13 @@ export default function Login() {
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className={`mt-1 ${FIELD}`}
+            className={`mt-2 ${FIELD}`}
             required
           />
         </div>
 
         {error && (
-          <p className="rounded-md bg-status-critical/10 px-3 py-2 text-xs text-status-critical">
+          <p className="rounded-lg border border-status-critical/20 bg-status-critical/8 px-3.5 py-2.5 text-[14px] leading-relaxed text-status-critical">
             {error}
           </p>
         )}

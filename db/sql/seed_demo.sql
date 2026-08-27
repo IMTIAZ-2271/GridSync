@@ -139,13 +139,15 @@ WITH new_sites AS (
     SELECT s.account_id,
            p.plan_id,
            format('Seed Site %s', to_char(s.n, 'FM00')),
-           format('House %s, Road %s', 10 + s.n * 3, 4 + s.n),
+           -- The address names its district, which is what tells
+           -- scripts/relocate_demo_sites.py this site is already where it
+           -- belongs and must not be given a new door number.
+           format('House %s, Road %s, %s', 10 + s.n * 3, 4 + s.n, d.suffix),
            'Dhaka',
-           (ARRAY['Dhanmondi','Gulshan','Uttara','Mirpur',
-                  'Bashundhara','Banani','Mohammadpur','Badda'])[s.n],
+           d.district,
            format('12%s0', s.n),
-           (23.700000 + s.n * 0.021)::numeric(9,6),
-           (90.360000 + s.n * 0.011)::numeric(9,6),
+           d.latitude,
+           d.longitude,
            'Asia/Dhaka',
            'residential',
            (4.0 + s.n * 0.5)::numeric(8,3),
@@ -153,6 +155,20 @@ WITH new_sites AS (
            'active'
     FROM seed_site s
     CROSS JOIN tariff_plan p
+    -- Three districts, dealt round-robin: 3 in Dhanmondi, 3 in Badda, 2 in
+    -- Uttara. Not eight districts any more -- an official governs exactly one
+    -- district, and db/sql/seed_orgs.sql staffs three of them, so a site in a
+    -- fourth is a household nobody can approve a meter for. The centroid is
+    -- read off the district table rather than computed from `n`, because
+    -- site.latitude/longitude is what the simulator's solar geometry will use.
+    CROSS JOIN LATERAL (
+        SELECT dd.name AS district, dd.latitude, dd.longitude,
+               CASE dd.name WHEN 'Badda' THEN 'Middle Badda'
+                            WHEN 'Uttara' THEN format('Sector %s, Uttara', 3 + s.n % 6)
+                            ELSE dd.name END AS suffix
+        FROM district dd
+        WHERE dd.name = (ARRAY['Dhanmondi','Badda','Uttara'])[1 + (s.n - 1) % 3]
+    ) AS d
     WHERE p.code = 'SEED-TOU-RES'
     ORDER BY s.n
     RETURNING site_id, label
@@ -293,17 +309,16 @@ VALUES
 
 -- service_district is a foreign key to `district` since migration
 -- e7c4b19a2d83, so these are real districts rather than the 'Dhaka North' /
--- 'Dhaka South' labels that used to sit here. Gulshan and Dhanmondi are also
--- served by different utilities (DESCO and DPDC), which is what makes
--- db/sql/seed_orgs.sql able to demonstrate both branches of worker
--- requirement 1.
+-- 'Dhaka South' labels that used to sit here. Both are districts this estate
+-- actually staffs; db/sql/seed_orgs.sql then restates these two rows along
+-- with the eight technicians it adds, so the roster lives in one place.
 INSERT INTO worker_profile (account_id, employee_code, service_district,
                             max_daily_jobs, availability, hired_on)
 SELECT a.account_id,
        CASE a.email WHEN 'worker1@demo.com'
             THEN 'SEED-EMP-001' ELSE 'SEED-EMP-002' END,
        CASE a.email WHEN 'worker1@demo.com'
-            THEN 'Gulshan' ELSE 'Dhanmondi' END,
+            THEN 'Badda' ELSE 'Dhanmondi' END,
        5,
        'available',
        (CURRENT_DATE - INTERVAL '3 years')::date
