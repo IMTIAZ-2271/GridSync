@@ -98,7 +98,7 @@ PLAN: list[tuple[str, str, int]] = [
     ("gov@demo.com", "government", 1),         # Badda
     ("gov2@demo.com", "government", 2),        # Dhanmondi
     ("gov3@demo.com", "government", 3),        # Uttara
-    ("supplier@demo.com", "supplier", 1),      # Noor Energy Systems
+    ("supplier@demo.com", "supplier", 1),      # Supplier 1 (NOOR)
     *[(f"supplier{n}@demo.com", "supplier", n) for n in range(2, 6)],
 ]
 

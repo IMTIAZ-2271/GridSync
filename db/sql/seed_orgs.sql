@@ -57,14 +57,14 @@ ON CONFLICT (company_id, district) DO NOTHING;
 -- ---------------------------------------------------------------------------
 INSERT INTO supplier_company (code, name, license_no, contact_email, contact_phone)
 VALUES
-  ('SOLARIS', 'Solaris Bangladesh Ltd',   'SREDA-2019-0114',
-   'hello@solaris.example',   '+8801711220001'),
-  ('RAHIMA',  'Rahima Renewables',        'SREDA-2021-0298',
-   'info@rahima.example',     '+8801711220002'),
-  ('PADMA',   'Padma Solar Engineering',  'SREDA-2020-0071',
-   'contact@padma.example',   '+8801711220003'),
-  ('NOOR',    'Noor Energy Systems',      'SREDA-2022-0446',
-   'sales@noorenergy.example', '+8801711220004')
+  ('SOLARIS', 'Supplier 2',               'SREDA-2019-0114',
+   'contact@supplier2.example', '+8801711220001'),
+  ('RAHIMA',  'Supplier 3',               'SREDA-2021-0298',
+   'contact@supplier3.example', '+8801711220002'),
+  ('PADMA',   'Supplier 4',               'SREDA-2020-0071',
+   'contact@supplier4.example', '+8801711220003'),
+  ('NOOR',    'Supplier 1',               'SREDA-2022-0446',
+   'contact@supplier1.example', '+8801711220004')
 ON CONFLICT (code) DO UPDATE
   SET name = EXCLUDED.name,
       license_no = EXCLUDED.license_no,
@@ -127,8 +127,8 @@ ON CONFLICT (code) DO NOTHING;
 -- The three were not picked arbitrarily. Badda is served by BOTH utilities
 -- (which is the only reason requirement 6's dropdown is a choice at all),
 -- Dhanmondi is DPDC-only and Uttara is DESCO-only, so the estate exercises
--- every branch. All four installers keep work: Noor covers all three, Solaris
--- Badda, Rahima Dhanmondi, Padma Uttara.
+-- every branch. All four installers keep work: Supplier 1 (NOOR) covers all
+-- three, Supplier 2 Badda, Supplier 3 Dhanmondi, Supplier 4 Uttara.
 -- ---------------------------------------------------------------------------
 UPDATE district
 SET is_selectable = (name IN ('Badda', 'Dhanmondi', 'Uttara'))
@@ -179,7 +179,8 @@ VALUES
   ('gov2@demo.com', 'government', 'Gov 2', '3000000002', 'Dhanmondi', 'GOV-DHANMONDI-01'),
   ('gov3@demo.com', 'government', 'Gov 3', '3000000003', 'Uttara',    'GOV-UTTARA-01');
 
--- Five installer staff across four firms. Noor gets two logins on purpose:
+-- Five installer staff across four firms. Supplier 1 (NOOR) gets two logins on
+-- purpose:
 -- staff attach to a company rather than being one (docs/decisions.md), and
 -- that is only demonstrable if some firm has more than one person.
 INSERT INTO seed_staff (email, role, full_name, national_id, supplier_code)
