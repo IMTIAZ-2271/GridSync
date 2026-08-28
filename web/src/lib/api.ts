@@ -1103,8 +1103,6 @@ export interface MeterRegisterResult {
 }
 
 export interface SolarRegisterBody {
-  /** Required once the site has more than one billing meter. */
-  point_id?: string;
   capacity_kw: number;
   panel_count: number;
   azimuth_deg?: number;
@@ -1115,16 +1113,89 @@ export interface SolarRegisterBody {
 
 export interface SolarRegisterResult {
   inverter_device_id: string;
+  inverter_serial_no: string;
   array_id: string;
-  point_id: string;
-  /** Arrays now on this connection, and their combined AC capacity -- this one included. */
+  /**
+   * Arrays on this SITE and their combined AC capacity, this one included.
+   * Site-wide, not per-connection: an inverter joins a billing point only when
+   * net metering is granted, so until then the site is the only scope it has.
+   */
   array_count: number;
-  point_capacity_kw: Decimal;
+  site_capacity_kw: Decimal;
   backfill_from: DateOnly;
   backfill_to: DateOnly;
   readings_backfilled: number;
-  /** The meter's own history, re-netted against the connection's TOTAL capacity. */
-  meter_readings_updated: number;
+}
+
+/**
+ * One inverter, with everything behind its net-metering verdict.
+ *
+ * An inverter is never a meter and can never become one: it reports generation
+ * and nothing else, while the import/export split is knowable only at the
+ * bidirectional meter on the grid boundary.
+ */
+export interface Inverter {
+  device_id: string;
+  serial_no: string;
+  site_id: string;
+  site_label: string;
+  manufacturer: string | null;
+  model: string | null;
+  installed_at: Timestamp;
+  last_seen_at: Timestamp | null;
+  status: string;
+  ac_capacity_kw: Decimal;
+  array_count: number;
+  /** The connection these panels feed, or null while they feed none. */
+  billing_point_id: string | null;
+
+  /** Days with readings over the last 30 whole Dhaka days. */
+  gen_days: number;
+  meter_days: number;
+  generation_kwh: Decimal;
+  /** Null when there is nothing to average yet -- not the same as zero. */
+  generation_daily_kwh: Decimal | null;
+  consumption_daily_kwh: Decimal | null;
+
+  expected_daily_kwh: Decimal;
+  required_daily_kwh: Decimal | null;
+  performance_floor_kwh: Decimal;
+
+  /** Three verdicts, so the page can say WHICH test failed. */
+  has_enough_history: boolean;
+  meets_demand: boolean | null;
+  meets_performance: boolean | null;
+  eligible: boolean;
+  /**
+   * Why it cannot carry an application, in one sentence, or null when nothing
+   * is blocking. Computed on the server so this string and the 409 from
+   * applying are word-for-word the same.
+   */
+  blocking_reason: string | null;
+}
+
+/** A normal billing meter that could be exchanged for a bidirectional one. */
+export interface SwappableMeter {
+  billing_point_id: string;
+  point_label: string;
+  point_reference: string | null;
+  meter_device_id: string;
+  meter_serial: string;
+  installed_at: Timestamp;
+  last_seen_at: Timestamp | null;
+}
+
+/** When this account last opened one list. See ViewSeen for how it is used. */
+export interface ViewState {
+  view_key: string;
+  last_viewed_at: Timestamp;
+}
+
+export interface ViewSeen {
+  view_key: string;
+  /** Where the watermark was before this call; null on a first-ever visit. */
+  previous_viewed_at: Timestamp | null;
+  last_viewed_at: Timestamp;
 }
 
 export interface BillingRunResult {
@@ -1371,10 +1442,29 @@ export const api = {
   netMeteringApplications: () =>
     request<NetMeteringApplication[]>("/net-metering-applications"),
 
-  applyForNetMetering: (billingPointId: string) =>
+  /**
+   * Both choices are mandatory, and the first gates the second: the inverter is
+   * what gets assessed, the connection names the meter being given up.
+   */
+  applyForNetMetering: (inverterDeviceId: string, billingPointId: string) =>
     request<NetMeteringApplication>("/net-metering-applications", {
       method: "POST",
-      body: JSON.stringify({ billing_point_id: billingPointId }),
+      body: JSON.stringify({
+        inverter_device_id: inverterDeviceId,
+        billing_point_id: billingPointId,
+      }),
+    }),
+
+  inverters: () => request<Inverter[]>("/inverters"),
+
+  swappableMeters: (siteId: string) =>
+    request<SwappableMeter[]>(`/sites/${siteId}/swappable-meters`),
+
+  viewStates: () => request<ViewState[]>("/views"),
+
+  markViewSeen: (viewKey: string) =>
+    request<ViewSeen>(`/views/${encodeURIComponent(viewKey)}/seen`, {
+      method: "POST",
     }),
 
   withdrawNetMeteringApplication: (agreementId: string) =>
@@ -1569,6 +1659,9 @@ export const queryKeys = {
   meterApplicationQueue: (includeDecided: boolean) =>
     ["meter-applications", "queue", includeDecided] as const,
   netMeteringApplications: () => ["net-metering-applications"] as const,
+  inverters: () => ["inverters"] as const,
+  swappableMeters: (siteId: string) => ["sites", siteId, "swappable-meters"] as const,
+  viewStates: () => ["views"] as const,
   pendingWorkers: () => ["workers", "pending"] as const,
   analyticsByArea: (district?: string) =>
     ["analytics", "by-area", district ?? "all"] as const,

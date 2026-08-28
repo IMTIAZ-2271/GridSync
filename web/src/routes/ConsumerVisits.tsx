@@ -4,6 +4,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, api, queryKeys, type Visit } from "../lib/api";
 import { ORDER_TYPE_LABEL } from "../lib/workOrders";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -32,6 +38,10 @@ import {
  * pressing a star must not be what saves it. Choose, write, then send.
  */
 export default function ConsumerVisits() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.consumerVisits);
   const queryClient = useQueryClient();
   const visits = useQuery({
     queryKey: queryKeys.visits(),
@@ -100,6 +110,7 @@ export default function ConsumerVisits() {
         <ul className="divide-y divide-hairline">
           {visits.data.map((visit) => (
             <VisitRow
+              unread={isUnread(visit.completed_at, watermark)}
               key={visit.order_id}
               visit={visit}
               busy={
@@ -121,11 +132,14 @@ export default function ConsumerVisits() {
 }
 
 function VisitRow({
+  unread,
   visit,
   busy,
   onRate,
   onVerdict,
 }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean;
   visit: Visit;
   busy: boolean;
   onRate: (body: Parameters<typeof api.rateVisit>[1]) => void;
@@ -152,7 +166,7 @@ function VisitRow({
     : null;
 
   return (
-    <li className="px-5 py-4">
+    <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-medium text-ink">

@@ -220,16 +220,19 @@ BEGIN
     -- Scoped to this point's own devices, not the whole site: a site with two
     -- connections has two sets of hardware, and attributing all of it to
     -- whichever point billed first would double-count generation across the
-    -- site's bills. A device belongs to this point if its meter_spec names
-    -- the point, or if it hangs off the point's billing meter -- which is how
-    -- an inverter is attached (see create_inverter_device).
+    -- site's bills. A device belongs to this point if its own subtype row
+    -- names the point -- meter_spec for a meter, inverter_spec for an
+    -- inverter. Before migration d4f8a2c61e95 the inverter half was inferred
+    -- from d.parent_device_id = v_meter_id; it is read off the inverter now,
+    -- because an inverter need not hang off a meter at all.
     WITH point_device AS (
         SELECT d.device_id
         FROM device d
-        LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
+        LEFT JOIN meter_spec    ms  ON ms.device_id  = d.device_id
+        LEFT JOIN inverter_spec ivs ON ivs.device_id = d.device_id
         WHERE d.site_id = v_site_id
-          AND (ms.billing_point_id = p_point_id
-               OR d.parent_device_id = v_meter_id)
+          AND (ms.billing_point_id  = p_point_id
+               OR ivs.billing_point_id = p_point_id)
     )
     SELECT coalesce(round(sum(dr.generation_kwh), 4), 0)::numeric(12,4),
            count(DISTINCT dr.device_id)::smallint

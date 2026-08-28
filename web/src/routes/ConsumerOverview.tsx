@@ -13,6 +13,7 @@ import { READING_VIEWS, SERIES, type ReadingViewId } from "../lib/series";
 import { useSelectedSite } from "../components/SitePicker";
 import ScopePicker, { type ScopeOption } from "../components/ScopePicker";
 import ReadingsChart from "../components/ReadingsChart";
+import PowerFlow, { flowTotals } from "../components/PowerFlow";
 import ConsumerOnboarding from "./ConsumerOnboarding";
 import {
   Card,
@@ -70,6 +71,25 @@ export default function ConsumerOverview() {
     enabled: !!siteId,
   });
 
+  // The flow panel is always the last 24 hours, whatever the chart below is
+  // showing. Same query key as the chart's when the chart is on Day, so React
+  // Query serves both from one request in the common case.
+  const today = useQuery({
+    queryKey: queryKeys.siteReadings(siteId!, "day", pointId),
+    queryFn: () => api.siteReadings(siteId!, "day", pointId),
+    enabled: !!siteId,
+  });
+
+  // Panels, and whether they are behind a bidirectional meter yet. An
+  // inverter joins a billing point only when net metering is granted, so
+  // `billing_point_id` is exactly the "is this connection net-metered"
+  // question -- and it decides whether the flow panel may claim how much
+  // generation reached the house.
+  const inverters = useQuery({
+    queryKey: queryKeys.inverters(),
+    queryFn: api.inverters,
+  });
+
   const connections = points.data ?? [];
   const scoped = pointId
     ? connections.find((p) => p.point_id === pointId)
@@ -94,6 +114,13 @@ export default function ConsumerOverview() {
   // Solar is a property of what is currently in scope, not of the site: a
   // household with panels on one connection must not be offered an empty solar
   // chart for the other. An empty chart is a dead end, not an interface.
+  const siteInverters = (inverters.data ?? []).filter((i) => i.site_id === siteId);
+  const inScope = pointId
+    ? siteInverters.filter((i) => i.billing_point_id === pointId)
+    : siteInverters;
+  // Panels exist. NOT the same question as whether they are net-metered.
+  const hasPanels = inScope.length > 0;
+  const netMetered = inScope.some((i) => i.billing_point_id !== null);
   const hasSolar = scoped ? scoped.has_solar : Boolean(site?.has_solar);
   const [view, setView] = useState<ReadingViewId>("consumption");
   const views = READING_VIEWS.filter(
@@ -128,21 +155,79 @@ export default function ConsumerOverview() {
         </div>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {summary.isPending || !siteId ? (
-          <>
-            <StatSkeleton />
-            <StatSkeleton />
-            <StatSkeleton />
-          </>
-        ) : summary.error ? (
-          <Card className="lg:col-span-3">
-            <ErrorState error={summary.error} />
-          </Card>
-        ) : (
-          <SummaryStats summary={summary.data} />
-        )}
-      </div>
+      {/* ================= Right now =================================== */}
+      {/* Two named zones rather than one undifferentiated grid. "Right now"
+          is what the household opens the page to see; "This month" is the
+          money, which is a different question asked at a different cadence.
+          Mixing them is what made the old layout hard to read. */}
+      <section aria-labelledby="zone-now" className="space-y-4">
+        <ZoneHeading
+          id="zone-now"
+          title="Right now"
+          hint={
+            hasPanels
+              ? "Where your energy went over the last 24 hours"
+              : "What this connection has drawn over the last 24 hours"
+          }
+        />
+
+        <Card>
+          <div className="p-5">
+            {today.isPending || !siteId ? (
+              <Skeleton className="h-56 w-full" />
+            ) : today.error ? (
+              <ErrorState error={today.error} />
+            ) : today.data.length === 0 ? (
+              <EmptyState
+                title="Nothing reported in the last 24 hours"
+                hint={
+                  hasPanels
+                    ? "Neither the meter nor the inverter has sent a reading. If that is unexpected, report a problem from the Equipment page."
+                    : "The meter has not sent a reading. If that is unexpected, report a problem from the Equipment page."
+                }
+              />
+            ) : (
+              <PowerFlow
+                totals={flowTotals(today.data)}
+                hasSolar={hasPanels}
+                netMetered={netMetered}
+                caption={
+                  !hasPanels
+                    ? "Last 24 hours. Without panels, everything the home uses comes from the grid."
+                    : netMetered
+                      ? "Last 24 hours. Self-consumption is generation less export — only the bidirectional meter at the grid boundary can measure the split."
+                      : "Last 24 hours. Your meter records what you draw from the grid; it cannot yet measure what the panels sent back. Net metering swaps it for one that can."
+                }
+              />
+            )}
+          </div>
+        </Card>
+      </section>
+
+      {/* ================= This month ================================== */}
+      <section aria-labelledby="zone-month" className="space-y-4">
+        <ZoneHeading
+          id="zone-month"
+          title="This month"
+          hint="Your bill, your credit balance and the last 30 days. Your monthly budget lives in Settings."
+        />
+
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {summary.isPending || !siteId ? (
+            <>
+              <StatSkeleton />
+              <StatSkeleton />
+              <StatSkeleton />
+            </>
+          ) : summary.error ? (
+            <Card className="lg:col-span-3">
+              <ErrorState error={summary.error} />
+            </Card>
+          ) : (
+            <SummaryStats summary={summary.data} />
+          )}
+        </div>
+      </section>
 
       <Card>
         <CardHeader
@@ -222,6 +307,29 @@ export default function ConsumerOverview() {
           )}
         </div>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * A zone heading. Deliberately not a Card header: these separate two groups of
+ * cards, so putting them inside one would nest the wrong thing.
+ */
+function ZoneHeading({
+  id,
+  title,
+  hint,
+}: {
+  id: string;
+  title: string;
+  hint: string;
+}) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <h2 id={id} className="text-sm font-semibold text-ink">
+        {title}
+      </h2>
+      <p className="text-xs text-ink-muted">{hint}</p>
     </div>
   );
 }

@@ -3,6 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, api, queryKeys, type PendingWorker } from "../lib/api";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -35,6 +41,10 @@ import {
  * answer -- "rejected" alone does not tell an applicant what to fix.
  */
 export default function GovernmentWorkers() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.governmentWorkers);
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -114,6 +124,7 @@ export default function GovernmentWorkers() {
         <ul className="divide-y divide-hairline">
           {pending.data.map((worker) => (
             <WorkerRow
+              unread={isUnread(worker.registered_at, watermark)}
               key={worker.account_id}
               worker={worker}
               rejecting={rejecting === worker.account_id}
@@ -147,6 +158,7 @@ export default function GovernmentWorkers() {
 }
 
 function WorkerRow({
+  unread,
   worker,
   rejecting,
   reason,
@@ -157,6 +169,8 @@ function WorkerRow({
   onCancelReject,
   onConfirmReject,
 }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean;
   worker: PendingWorker;
   rejecting: boolean;
   reason: string;
@@ -172,7 +186,7 @@ function WorkerRow({
   );
 
   return (
-    <li className="px-5 py-4">
+    <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="font-medium text-ink">{worker.full_name}</p>

@@ -3,6 +3,18 @@
 
 
 -- name: list_pending_agreements
+-- The regulator's approval queue.
+--
+-- $1 NULL means every district, which is what a supplier (a fleet-wide
+-- reader) and an admin get. An OFFICIAL is confined to the district their
+-- single-use code was issued for, exactly as `meter_applications_queue` and
+-- `pending_workers` already are.
+--
+-- Without that scope an official saw every pending application in the
+-- country and could act on none of them but their own -- every button
+-- answering 404, which reads as a broken page rather than as a boundary.
+-- Found by walking the flow end to end: gov1 was shown a Dhanmondi
+-- application and was refused the moment they ordered its inspection.
 SELECT nma.agreement_id,
        nma.site_id,
        s.label AS site_label,
@@ -24,7 +36,10 @@ JOIN site s ON s.site_id = nma.site_id
 JOIN account a ON a.account_id = s.account_id
 JOIN device d ON d.device_id = nma.billing_device_id
 WHERE nma.status = 'pending'
-ORDER BY nma.created_at;
+  AND ($1::text IS NULL OR s.district = $1)
+-- Newest first. Every queue in this system leads with the most recent
+-- arrival; a reviewer who wants the oldest sorts the column.
+ORDER BY nma.created_at DESC;
 
 
 -- name: get_agreement
@@ -117,8 +132,8 @@ SELECT nma.agreement_id,
        (SELECT count(*)
         FROM solar_array sa
         JOIN device inv ON inv.device_id = sa.inverter_device_id
-        JOIN meter_spec ims ON ims.device_id = inv.parent_device_id
-        WHERE ims.billing_point_id = nma.billing_point_id
+        JOIN inverter_spec ivs ON ivs.device_id = sa.inverter_device_id
+        WHERE ivs.billing_point_id = nma.billing_point_id
           AND sa.status <> 'decommissioned'
           AND inv.removed_at IS NULL)::int AS array_count,
        visit.order_id           AS visit_order_id,

@@ -24,6 +24,12 @@ import {
   humanize,
 } from "../lib/issues";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -33,6 +39,10 @@ import {
 } from "../components/ui";
 
 export default function ConsumerIssues() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.consumerIssues);
   const { siteId, site } = useSelectedSite();
   const queryClient = useQueryClient();
 
@@ -79,7 +89,11 @@ export default function ConsumerIssues() {
         ) : (
           <ul>
             {mine.map((issue) => (
-              <IssueRow key={issue.issue_id} issue={issue} />
+              <IssueRow
+                key={issue.issue_id}
+                issue={issue}
+                unread={isUnread(issue.reported_at, watermark)}
+              />
             ))}
           </ul>
         )}
@@ -101,11 +115,16 @@ export default function ConsumerIssues() {
   );
 }
 
-function IssueRow({ issue }: { issue: Issue }) {
+function IssueRow({
+  unread, issue }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean; issue: Issue }) {
   const category = categoryLabel(issue.category);
 
   return (
-    <li className="border-b border-hairline px-5 py-4 last:border-0">
+    <li
+      className={`border-b border-hairline px-5 py-4 last:border-0 ${unreadRowClass(unread)}`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-medium text-ink">{issue.title}</p>

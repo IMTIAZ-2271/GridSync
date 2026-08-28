@@ -214,10 +214,15 @@ class MeterRegisterOut(BaseModel):
 
 
 class SolarRegister(BaseModel):
-    # Which connection the array feeds. Optional while a site has exactly one
-    # billing point; required once it has more, because netting the wrong
-    # meter would credit one connection for another's export.
-    point_id: UUID | None = None
+    """Panels and the inverter that runs them.
+
+    There is deliberately no `point_id`. An inverter is not part of a
+    connection when it is installed -- it becomes part of one only when net
+    metering is granted and a bidirectional meter goes on the wall, which is
+    the act that makes its export measurable at all (rule 6). Registering
+    panels against a connection would be asserting that, months early.
+    """
+
     capacity_kw: Decimal = Field(gt=0, le=1000)
     panel_count: int = Field(gt=0, le=2000)
     azimuth_deg: int = Field(default=180, ge=0, le=359)
@@ -228,21 +233,17 @@ class SolarRegister(BaseModel):
 
 class SolarRegisterOut(BaseModel):
     inverter_device_id: UUID
+    inverter_serial_no: str
     array_id: UUID
-    point_id: UUID
-    # Arrays now live on this billing point, and their combined AC capacity.
-    # Both count the array just added.
+    # Arrays on this site and their combined AC capacity, both counting the
+    # one just added. Site-wide rather than per-connection: until net metering
+    # attaches an inverter to a billing point, the site is the only scope the
+    # panels have.
     array_count: int
-    point_capacity_kw: Energy
+    site_capacity_kw: Energy
     backfill_from: date
     backfill_to: date
     readings_backfilled: int
-    # The billing meter's own history for the same window, re-netted against
-    # the point's TOTAL capacity now that it is known. Without this, a freshly
-    # onboarded solar site's meter keeps the export-free readings the /meter
-    # step wrote before any capacity existed, and the site would show zero
-    # export -- and therefore never earn or roll over credit -- forever.
-    meter_readings_updated: int
 
 
 class BillingRunResult(BaseModel):
@@ -758,14 +759,47 @@ async def register_meter(
                 detail=f"meter '{serial}' is already assigned to a connection",
             )
 
+        # Unidirectional unless this connection is net-metered. A meter that
+        # can measure export is the *outcome* of a net-metering agreement, not
+        # an option at install time -- rule 6 puts the import/export split at
+        # the grid boundary, and only the regulator decides a connection may
+        # sit there. An ordinary household meter must never look net-metered.
+        agreement = await conn.fetchrow(sql("point_open_agreement"), point["point_id"])
+        net_metered = agreement is not None and agreement["status"] == "active"
+        meter_flow = "bidirectional" if net_metered else "unidirectional"
+
         await conn.execute(
-            sql("create_meter_spec"), device_id, site_id, point["point_id"]
+            sql("create_meter_spec"),
+            device_id, site_id, point["point_id"], meter_flow,
         )
 
+        # The panels join the connection here and nowhere else. Until a meter
+        # that can measure export is actually on the wall, an inverter
+        # attached to a billing point would be claiming an export nothing can
+        # see. attach_inverter_to_point is guarded on the inverter still being
+        # unattached, so re-running this cannot move one off a connection it
+        # already serves.
+        solar_capacity_kw = None
+        if net_metered and agreement["inverter_device_id"] is not None:
+            await conn.fetchval(
+                sql("attach_inverter_to_point"),
+                agreement["inverter_device_id"], point["point_id"],
+            )
+            solar_capacity_kw = await conn.fetchval(
+                "SELECT ac_capacity_kw FROM inverter_spec WHERE device_id = $1",
+                agreement["inverter_device_id"],
+            )
+
+        # p_capacity_kw is the solar the new meter nets against. NULL on an
+        # ordinary install (no panels behind this connection, so import is
+        # plain consumption); the inverter's rating once the swap has made
+        # export measurable, which is what starts the connection earning
+        # credit. The window is already clipped past the retired meter's last
+        # reading above, so this never re-covers ground and never double-counts.
         reading_count = (
             await conn.fetchval(
-                "SELECT backfill_readings($1, $2, $3, NULL)",
-                device_id, backfill_from, backfill_to,
+                "SELECT backfill_readings($1, $2, $3, $4)",
+                device_id, backfill_from, backfill_to, solar_capacity_kw,
             )
             if backfill_from <= backfill_to
             else 0
@@ -795,49 +829,44 @@ async def register_solar(
     payload: SolarRegister,
     principal: Annotated[Principal, Depends(require_role("consumer"))],
 ) -> SolarRegisterOut:
-    """Add an inverter and its array, then backfill the same 90-day window the
-    meter got so the two lines agree on how far back the chart goes -- and
-    re-net the meter's own history, since it was written before any solar
-    existed to net against (see backfill_readings' upsert note in
-    db/sql/service/backfill.sql).
+    """Register an inverter and the array it runs, and backfill its generation.
 
-    **This registers hardware and nothing else.** It used to open a `pending`
-    net-metering agreement as a side effect, which meant a household applied to
-    sell power back to the grid by filling in a panel-count form and was never
-    asked. Net metering is now an explicit application the consumer submits --
-    POST /api/net-metering-applications -- because it is a different act, months
-    later in real life, and the regulator's answer is about the connection, not
-    about the roof.
+    **The inverter is its own connection, not an attachment to a meter.** It
+    is created against the site with `inverter_spec.billing_point_id` NULL,
+    and it stays that way until net metering is granted -- registering it
+    against a billing point would assert months early that this connection can
+    sell power back.
 
-    Additive, not once-per-connection. `solar_array` is 1-N, so a connection
-    may genuinely carry several arrays, and the meter is re-netted against the
-    billing point's TOTAL AC capacity rather than the array just registered.
-    Passing this array's capacity alone would rewrite an existing multi-array
-    history as if the other arrays were not there, silently *reducing* recorded
-    export.
+    Two consequences worth being explicit about, because both are changes:
 
-    Everything here is scoped to one billing point rather than the whole site.
-    A household with two connections has two meters, two agreements and two
-    credit balances; netting the site's total capacity into whichever meter
-    answered first would credit one connection for the other's export.
+    * **A site needs no billing meter for this.** Panels are fitted by a
+      private installer and a billing meter is issued by the distribution
+      company; they are different organisations doing different things at
+      different times (decision 4), and requiring one before the other made
+      the ordinary sequence -- panels first, net metering later -- impossible
+      to record.
+
+    * **The billing meter is not re-netted here, and that is a considered
+      choice rather than an omission.** Netting a *unidirectional* meter
+      against solar destroys the one figure the net-metering test needs: once
+      import reads `load - generation` and export cannot be measured at all,
+      the household's actual consumption is unrecoverable whenever the panels
+      out-produce the house. So an un-swapped meter keeps reporting the grid
+      draw, which is also exactly the figure a utility assesses an application
+      against -- your billed consumption. The netted split begins when the
+      bidirectional meter that can actually measure it is installed.
+
+    Additive. `solar_array` is 1-N on the site, so a household may add a
+    second array later, and each gets its own inverter.
     """
     await visible_site_or_404(conn, principal, site_id)
 
-    point = await _resolve_point(conn, site_id, payload.point_id)
-    point_id = point["point_id"]
-
-    billing_device_id = await conn.fetchval(sql("point_billing_device"), point_id)
-    if billing_device_id is None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"register a billing meter on '{point['label']}' before adding solar",
-        )
-
-    existing = await conn.fetchrow(sql("point_solar_status"), point_id)
+    existing = await conn.fetchrow(sql("site_solar_status"), site_id)
     array_count = existing["array_count"] + 1
-    point_capacity_kw = existing["capacity_kw"] + payload.capacity_kw
+    site_capacity_kw = existing["capacity_kw"] + payload.capacity_kw
     label = "Rooftop array" if array_count == 1 else f"Rooftop array {array_count}"
 
+    serial_no = f"ONB-INV-{uuid4().hex[:10].upper()}"
     device_key_hash = hash_password(secrets.token_hex(32))
     dc_capacity_kw = (payload.capacity_kw * Decimal("1.2")).quantize(Decimal("0.001"))
     panel_watt_peak = int((dc_capacity_kw * 1000 / payload.panel_count).to_integral_value())
@@ -847,11 +876,16 @@ async def register_solar(
     async with conn.transaction():
         inverter_id = await conn.fetchval(
             sql("create_inverter_device"),
-            site_id, billing_device_id, f"ONB-INV-{uuid4().hex[:10].upper()}",
+            # parent_device_id is NULL: the inverter is not defined by a meter
+            # any more, and on a site with no meter there is nothing to point
+            # at. Physical topology is recorded at the swap, when a technician
+            # has actually seen how it is wired.
+            site_id, None, serial_no,
             payload.manufacturer.strip(), payload.model.strip(), device_key_hash,
         )
         await conn.execute(
-            sql("create_inverter_spec"), inverter_id, payload.capacity_kw, dc_capacity_kw
+            sql("create_inverter_spec"),
+            inverter_id, site_id, None, payload.capacity_kw, dc_capacity_kw,
         )
         array_id = await conn.fetchval(
             sql("create_solar_array"),
@@ -859,34 +893,24 @@ async def register_solar(
             dc_capacity_kw, payload.azimuth_deg, payload.tilt_deg,
         )
 
+        # 90 days of generation, so the eligibility test for net metering has
+        # something real to measure. It needs 30 days of it (with a 14-day
+        # floor), and a household that has just had panels fitted would
+        # otherwise have to wait two weeks before it could even be assessed.
         reading_count = await conn.fetchval(
             "SELECT backfill_readings($1, $2, $3, $4)",
             inverter_id, backfill_from, backfill_to, payload.capacity_kw,
         )
 
-        # Re-net the meter over the same window now that capacity is known.
-        # The /meter step wrote these readings with p_capacity_kw = NULL
-        # (export = 0, rule 8's own guard inside backfill_readings still
-        # applies -- any interval already frozen or billed is left alone).
-        # point_capacity_kw, not payload.capacity_kw: the meter measures
-        # everything behind this connection at the grid boundary (rule 6), so
-        # netting it against one array would understate export wherever the
-        # connection carries more than one.
-        meter_reading_count = await conn.fetchval(
-            "SELECT backfill_readings($1, $2, $3, $4)",
-            billing_device_id, backfill_from, backfill_to, point_capacity_kw,
-        )
-
     return SolarRegisterOut(
         inverter_device_id=inverter_id,
+        inverter_serial_no=serial_no,
         array_id=array_id,
-        point_id=point_id,
         array_count=array_count,
-        point_capacity_kw=point_capacity_kw,
+        site_capacity_kw=site_capacity_kw,
         backfill_from=backfill_from,
         backfill_to=backfill_to,
         readings_backfilled=reading_count,
-        meter_readings_updated=meter_reading_count,
     )
 
 

@@ -20,6 +20,12 @@ import {
 import { humanize } from "../lib/issues";
 import { useAuth } from "../auth/AuthContext";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -38,6 +44,10 @@ import {
  * on a two-person meter swap is part of the job.
  */
 export default function WorkerOrders() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.workerOrders);
   const { account } = useAuth();
   const queryClient = useQueryClient();
   const [bucket, setBucket] = useState<OrderBucket>("active");
@@ -157,6 +167,7 @@ export default function WorkerOrders() {
         <ul className="divide-y divide-hairline">
           {shown.map((order) => (
             <OrderRow
+              unread={isUnread(order.created_at, watermark)}
               key={order.order_id}
               order={order}
               myAccountId={account?.account_id}
@@ -192,12 +203,15 @@ export default function WorkerOrders() {
 }
 
 function OrderRow({
+  unread,
   order,
   myAccountId,
   onAdvance,
   onRespond,
   pending,
 }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean;
   order: WorkOrder;
   myAccountId?: string;
   onAdvance: (status: WorkOrderStatus, serial?: string, note?: string) => void;
@@ -231,7 +245,7 @@ function OrderRow({
     order.meter_application_id !== null || order.agreement_id !== null;
 
   return (
-    <li className="px-5 py-4">
+    <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-ink">

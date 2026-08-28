@@ -7,6 +7,7 @@ import {
   formatKwh,
   queryKeys,
   type ApplicationVisit,
+  type Inverter,
   type MeterApplication,
   type NetMeteringApplication,
 } from "../lib/api";
@@ -274,34 +275,56 @@ function Requirements({ heading }: { heading: string }) {
  * told. Registering hardware and applying for net metering are now separate
  * calls, and this is where the second one is made.
  *
- * A connection is offered only when it has panels and no live application. The
- * API refuses both cases anyway (409); the form does not offer a button that
- * cannot work.
+ * Two choices, and the first gates the second. The inverter is measured
+ * against the property's own consumption over 30 days; only if it clears that
+ * bar does the meter dropdown appear at all. The API re-runs the identical
+ * check (the page's gate is a convenience, not the enforcement), so a caller
+ * that skips the form does not skip the test.
+ *
+ * Not scoped to the selected site: an inverter belongs to a site, so choosing
+ * the inverter is what decides which site's meters are on offer.
  */
 function NetMeteringPanel() {
   const queryClient = useQueryClient();
-  const { siteId } = useSelectedSite();
 
   const applications = useQuery({
     queryKey: queryKeys.netMeteringApplications(),
     queryFn: api.netMeteringApplications,
   });
 
-  const points = useQuery({
-    queryKey: queryKeys.sitePoints(siteId ?? ""),
-    queryFn: () => api.listBillingPoints(siteId!),
-    enabled: Boolean(siteId),
+  // The first dropdown. Account-scoped rather than site-scoped: an inverter
+  // belongs to a site, and the household picks the inverter first -- the site
+  // follows from it.
+  const inverters = useQuery({
+    queryKey: queryKeys.inverters(),
+    queryFn: api.inverters,
   });
 
+  const [inverterId, setInverterId] = useState("");
   const [point, setPoint] = useState("");
 
+  const chosen = (inverters.data ?? []).find((i) => i.device_id === inverterId);
+
+  // The second dropdown, and it is fetched only once an ELIGIBLE inverter has
+  // been chosen. That is the gate stated as data flow rather than as a
+  // disabled control: until the production test passes there is no request to
+  // make, because there is no question to ask yet.
+  const swappable = useQuery({
+    queryKey: queryKeys.swappableMeters(chosen?.site_id ?? ""),
+    queryFn: () => api.swappableMeters(chosen!.site_id),
+    enabled: Boolean(chosen?.eligible),
+  });
+
   const apply = useMutation({
-    mutationFn: (pointId: string) => api.applyForNetMetering(pointId),
+    mutationFn: (vars: { inverterId: string; pointId: string }) =>
+      api.applyForNetMetering(vars.inverterId, vars.pointId),
     onSuccess: async () => {
+      setInverterId("");
       setPoint("");
       await queryClient.invalidateQueries({
         queryKey: queryKeys.netMeteringApplications(),
       });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.inverters() });
       await queryClient.invalidateQueries({ queryKey: queryKeys.sites() });
     },
   });
@@ -334,73 +357,120 @@ function NetMeteringPanel() {
   });
 
   const mine = applications.data ?? [];
-  // A connection already carrying a live agreement or application is not a
-  // choice: nma_no_overlap allows one at a time, and terminated ones free it
-  // again.
-  const spoken = new Set(
-    mine
-      .filter((a) => a.status !== "terminated")
-      .map((a) => a.billing_point_id),
-  );
-  const eligible = (points.data ?? []).filter(
-    (p) => p.has_solar && !spoken.has(p.point_id),
-  );
-  const withoutSolar = (points.data ?? []).filter((p) => !p.has_solar);
+  const myInverters = inverters.data ?? [];
+  // Panels already inside a connection are done: they are net-metered, and
+  // there is nothing left to apply for.
+  const applicable = myInverters.filter((i) => !i.billing_point_id);
+  const meters = swappable.data ?? [];
+  const canSubmit = Boolean(chosen?.eligible && point);
 
   return (
     <div className="flex flex-col gap-6">
       <Card>
         <CardHeader
           title="Apply for net metering"
-          subtitle="One application per connection, for the connection the panels feed"
+          subtitle="Choose the inverter, then the meter it will replace"
         />
         <div className="space-y-4 p-5">
           <p className="text-sm text-ink-2">
             Net metering is your distribution company agreeing to credit the
-            energy your panels send back to the grid. Only the meter at the grid
-            boundary can measure that, so the application is about a{" "}
-            <b>connection</b>, not about the roof — a household with two
-            connections applies for each one separately.
+            energy your panels send back to the grid. Only a{" "}
+            <b>bidirectional</b> meter can measure that, so approving it means
+            swapping one of your normal meters for one — which is why this asks
+            for both: the panels that will generate, and the meter that will be
+            replaced.
           </p>
 
           <Requirements heading="What you need before you apply" />
 
-          {points.isPending ? (
+          {inverters.isPending ? (
             <Skeleton className="h-10 w-full" />
-          ) : eligible.length === 0 ? (
+          ) : applicable.length === 0 ? (
             <p className="rounded-md bg-plane px-3 py-2 text-sm text-ink-2">
-              {withoutSolar.length > 0 && spoken.size === 0
-                ? "None of your connections has a solar array yet. Register one on the Meters page — there is nothing to credit until the panels exist."
-                : "Every connection with panels already has an application or an agreement."}
+              {myInverters.length === 0
+                ? "You have no inverter registered. Add your solar on the Meters page — net metering credits what the panels export, so the panels have to exist first."
+                : "Every inverter you own is already net-metered."}
             </p>
           ) : (
             <form
-              className="flex flex-wrap items-end gap-3"
+              className="space-y-4"
               onSubmit={(e) => {
                 e.preventDefault();
-                if (point) apply.mutate(point);
+                if (canSubmit) apply.mutate({ inverterId, pointId: point });
               }}
             >
+              {/* Step 1. Every inverter is listed, including ones that cannot
+                  qualify: a dropdown that silently omits the household's only
+                  inverter is indistinguishable from a broken page, and the
+                  reason underneath is the half they can act on. */}
               <label className="block text-sm">
-                <span className="font-medium text-ink-2">Connection</span>
+                <span className="font-medium text-ink-2">1 · Inverter</span>
                 <select
                   required
-                  value={point}
-                  onChange={(e) => setPoint(e.target.value)}
-                  className="mt-1 w-64 rounded-lg border border-hairline bg-surface px-3 py-2 text-ink"
+                  value={inverterId}
+                  onChange={(e) => {
+                    setInverterId(e.target.value);
+                    // The meter choice belongs to the inverter's site, so it
+                    // cannot survive a change of inverter.
+                    setPoint("");
+                  }}
+                  className="mt-1 block w-full max-w-lg rounded-lg border border-hairline bg-surface px-3 py-2 text-ink"
                 >
-                  <option value="">Choose a connection…</option>
-                  {eligible.map((p) => (
-                    <option key={p.point_id} value={p.point_id}>
-                      {p.label}
-                      {p.meter_serial ? ` · ${p.meter_serial}` : ""}
+                  <option value="">Choose an inverter…</option>
+                  {applicable.map((i) => (
+                    <option key={i.device_id} value={i.device_id}>
+                      {i.serial_no} · {i.ac_capacity_kw} kW · {i.site_label}
+                      {i.eligible ? "" : " — not yet eligible"}
                     </option>
                   ))}
                 </select>
               </label>
+
+              {chosen && <Eligibility inverter={chosen} />}
+
+              {/* Step 2 exists only once step 1 has passed. This is the gate:
+                  an ineligible inverter does not merely disable the button, it
+                  means there is no second question to ask. */}
+              {chosen?.eligible && (
+                <label className="block text-sm">
+                  <span className="font-medium text-ink-2">
+                    2 · Meter to be swapped
+                  </span>
+                  <span className="mt-0.5 block text-xs text-ink-muted">
+                    This meter is removed and replaced with a bidirectional one.
+                    Its connection, bills and credit balance all stay where they
+                    are.
+                  </span>
+                  {swappable.isPending ? (
+                    <Skeleton className="mt-1 h-10 w-full max-w-lg" />
+                  ) : meters.length === 0 ? (
+                    <span className="mt-1 block rounded-md bg-plane px-3 py-2 text-sm text-ink-2">
+                      No meter at {chosen.site_label} can be swapped. Either
+                      every connection is already net-metered or already has an
+                      application, or there is no meter installed yet.
+                    </span>
+                  ) : (
+                    <select
+                      required
+                      value={point}
+                      onChange={(e) => setPoint(e.target.value)}
+                      className="mt-1 block w-full max-w-lg rounded-lg border border-hairline bg-surface px-3 py-2 text-ink"
+                    >
+                      <option value="">Choose a meter…</option>
+                      {meters.map((m) => (
+                        <option key={m.billing_point_id} value={m.billing_point_id}>
+                          {m.point_label} · {m.meter_serial}
+                          {m.point_reference ? ` · ${m.point_reference}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </label>
+              )}
+
               <button
                 type="submit"
-                disabled={apply.isPending || !point}
+                disabled={apply.isPending || !canSubmit}
                 className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-surface disabled:opacity-50"
               >
                 {apply.isPending ? "Sending…" : "Apply"}
@@ -462,6 +532,74 @@ function NetMeteringPanel() {
           </p>
         )}
       </Card>
+    </div>
+  );
+}
+
+/**
+ * The verdict on one inverter, with the arithmetic behind it.
+ *
+ * Shown for an eligible inverter as well as a refused one. A household about
+ * to give up a working meter is entitled to see why the system thinks the
+ * panels can carry the house, and the same three numbers are what make a
+ * refusal actionable rather than merely final.
+ *
+ * `blocking_reason` is the server's sentence, not one composed here: the 409
+ * from applying carries the identical string, so the form and the enforcement
+ * can never explain the same refusal two different ways.
+ */
+function Eligibility({ inverter }: { inverter: Inverter }) {
+  const ok = inverter.eligible;
+  return (
+    <div
+      className={[
+        "rounded-lg border px-4 py-3",
+        ok
+          ? "border-status-good/40 bg-status-good/8"
+          : "border-status-warning/50 bg-status-warning/8",
+      ].join(" ")}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={ok ? "good" : "warning"}>
+          {ok ? "Eligible" : "Not yet eligible"}
+        </Badge>
+        <span className="font-mono text-xs text-ink-2">
+          {inverter.serial_no}
+        </span>
+      </div>
+
+      {inverter.blocking_reason && (
+        <p className="mt-2 text-sm text-ink-2">{inverter.blocking_reason}</p>
+      )}
+
+      {/* The measurements, always. Withheld only when there is genuinely
+          nothing to average yet -- a dash would be read as zero output. */}
+      {inverter.generation_daily_kwh && inverter.consumption_daily_kwh && (
+        <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
+          <div>
+            <dt className="text-ink-muted">Produces</dt>
+            <dd className="font-medium text-ink">
+              {inverter.generation_daily_kwh} kWh/day
+            </dd>
+          </div>
+          <div>
+            <dt className="text-ink-muted">This property uses</dt>
+            <dd className="font-medium text-ink">
+              {inverter.consumption_daily_kwh} kWh/day
+            </dd>
+          </div>
+          <div>
+            <dt className="text-ink-muted">Needed to qualify</dt>
+            <dd className="font-medium text-ink">
+              {inverter.required_daily_kwh} kWh/day
+            </dd>
+          </div>
+        </dl>
+      )}
+      <p className="mt-2 text-xs text-ink-muted">
+        Measured over the last 30 days ({inverter.gen_days} day
+        {inverter.gen_days === 1 ? "" : "s"} of generation readings).
+      </p>
     </div>
   );
 }

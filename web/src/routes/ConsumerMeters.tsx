@@ -7,6 +7,7 @@ import {
   api,
   queryKeys,
   type BillingPoint,
+  type Inverter,
   type MeterAsset,
   type MeterRegisterResult,
 } from "../lib/api";
@@ -43,6 +44,7 @@ const FIELD =
 export default function ConsumerMeters() {
   const { siteId, site, isPending: siteLoading, error: siteError } =
     useSelectedSite();
+  const [addingSolar, setAddingSolar] = useState(false);
 
   const pointsQuery = useQuery({
     queryKey: queryKeys.sitePoints(siteId ?? ""),
@@ -55,6 +57,14 @@ export default function ConsumerMeters() {
   const assetsQuery = useQuery({
     queryKey: queryKeys.meterAssets(),
     queryFn: api.meterAssets,
+  });
+
+  // Also account-scoped, and narrowed to this site below. An inverter belongs
+  // to a site rather than to a connection, so it is listed on its own rather
+  // than under one of the connections.
+  const invertersQuery = useQuery({
+    queryKey: queryKeys.inverters(),
+    queryFn: api.inverters,
   });
 
   if (siteError) return <ErrorState error={siteError as Error} />;
@@ -72,6 +82,9 @@ export default function ConsumerMeters() {
 
   const assets = assetsQuery.data ?? [];
   const available = assets.filter((a) => a.available);
+  const siteInverters = (invertersQuery.data ?? []).filter(
+    (i) => i.site_id === siteId,
+  );
 
   return (
     <div className="space-y-6">
@@ -86,8 +99,32 @@ export default function ConsumerMeters() {
         />
         {pointsQuery.error && <ErrorState error={pointsQuery.error as Error} />}
         {pointsQuery.isPending && <Skeleton className="h-24" />}
-        {pointsQuery.data && (
-          <PointList siteId={siteId} points={pointsQuery.data} />
+        {pointsQuery.data && <PointList points={pointsQuery.data} />}
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Solar"
+          subtitle="Your panels and the inverter that runs them. An inverter measures what you generate; it is never a billing meter."
+          action={
+            <button
+              type="button"
+              onClick={() => setAddingSolar((v) => !v)}
+              className="shrink-0 rounded-md border border-hairline px-3 py-1.5 text-xs text-ink-2 transition-colors hover:bg-plane"
+            >
+              {addingSolar ? "Cancel" : "Add solar"}
+            </button>
+          }
+        />
+        {invertersQuery.error && (
+          <ErrorState error={invertersQuery.error as Error} />
+        )}
+        {invertersQuery.isPending && <Skeleton className="h-24" />}
+        {invertersQuery.data && <InverterList inverters={siteInverters} />}
+        {addingSolar && (
+          <div className="border-t border-hairline p-5">
+            <AddSolar siteId={siteId} onDone={() => setAddingSolar(false)} />
+          </div>
         )}
       </Card>
 
@@ -114,15 +151,7 @@ export default function ConsumerMeters() {
   );
 }
 
-function PointList({
-  siteId,
-  points,
-}: {
-  siteId: string;
-  points: BillingPoint[];
-}) {
-  const [adding, setAdding] = useState<string | null>(null);
-
+function PointList({ points }: { points: BillingPoint[] }) {
   if (points.length === 0) {
     return (
       <div className="p-5">
@@ -161,32 +190,14 @@ function PointList({
                 )}
               </p>
             </div>
-            {/* Registering an array was reachable only from the onboarding
-                wizard, which renders at zero sites -- so a household that had
-                panels fitted afterwards could never record them, and once net
-                metering became an explicit application (2026-08-27) could
-                never apply for it either. Solar needs the meter first: rule 6
-                says only the bidirectional meter knows the import/export
-                split, so there is nothing to net against without one. */}
-            {p.meter_device_id && (
-              <button
-                type="button"
-                onClick={() =>
-                  setAdding(adding === p.point_id ? null : p.point_id)
-                }
-                className="shrink-0 rounded-md border border-hairline px-3 py-1.5 text-xs text-ink-2 transition-colors hover:bg-plane"
-              >
-                {adding === p.point_id
-                  ? "Cancel"
-                  : p.has_solar
-                    ? "Add another array"
-                    : "Add solar"}
-              </button>
-            )}
+            {/* No "add solar" here any more. Panels are not part of a
+                connection until net metering is granted -- an inverter is
+                installed against the SITE and joins a billing point only when
+                the bidirectional meter that can measure its export goes on the
+                wall (rule 6). Registering an array against a connection would
+                assert that months early, so it lives in its own section
+                below. */}
           </div>
-          {adding === p.point_id && (
-            <AddSolar siteId={siteId} point={p} onDone={() => setAdding(null)} />
-          )}
         </li>
       ))}
     </ul>
@@ -194,25 +205,24 @@ function PointList({
 }
 
 /**
- * Register an array on one connection.
+ * Register an inverter and the array it runs, against the SITE.
  *
- * Scoped to a point, never to the site: the backfill re-nets that point's
- * billing meter against the point's total capacity, and netting the site's
- * whole fleet into whichever meter answered first would credit one connection
- * for another's export.
+ * Not against a connection, and it no longer needs a meter to exist first.
+ * Panels are fitted by a private installer; a billing meter is issued by the
+ * distribution company (decision 4). Requiring one before the other made the
+ * ordinary sequence -- panels first, net metering months later -- impossible
+ * to record.
  *
- * Registering panels is deliberately NOT an application for net metering --
- * that is a separate act with a different counterparty, and it lives on the
- * Applications page. The success message says where to go next rather than
- * leaving the household to wonder why nothing is being credited.
+ * Registering panels is deliberately NOT an application for net metering.
+ * That is a separate act with a different counterparty, and it lives on the
+ * Applications page; the success message says so rather than leaving the
+ * household to wonder why nothing is being credited.
  */
 function AddSolar({
   siteId,
-  point,
   onDone,
 }: {
   siteId: string;
-  point: BillingPoint;
   onDone: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -225,7 +235,6 @@ function AddSolar({
   const add = useMutation({
     mutationFn: () =>
       api.registerSolar(siteId, {
-        point_id: point.point_id,
         capacity_kw: Number(capacity),
         panel_count: Number(panels),
         azimuth_deg: Number(azimuth),
@@ -233,8 +242,11 @@ function AddSolar({
       }),
     onSuccess: () => {
       setDone(true);
-      // The meter's own history was re-netted against the new capacity, so
-      // every reading-derived view moves with it -- not just the array list.
+      // The inverter's own 90 days of generation land with it, so every
+      // reading-derived view moves. The billing meter is NOT re-netted here:
+      // a unidirectional meter cannot measure export, and there is none to
+      // record until the swap.
+      queryClient.invalidateQueries({ queryKey: queryKeys.inverters() });
       queryClient.invalidateQueries({ queryKey: queryKeys.sitePoints(siteId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.siteDevices(siteId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.siteArrays(siteId) });
@@ -250,12 +262,14 @@ function AddSolar({
   if (done) {
     return (
       <div className="mt-3 rounded-md bg-status-good/12 px-3 py-2 text-xs text-status-good-text">
-        Registered on <strong>{point.label}</strong>, and its meter history was
-        re-netted so past export shows up. Next: apply for{" "}
+        Inverter registered, and it is already reporting generation. Next: apply
+        for{" "}
         <Link to="/consumer/applications" className="underline">
           net metering
         </Link>{" "}
-        — until your utility approves that, exports earn no credit.
+        — until it is approved and your meter is swapped for a bidirectional
+        one, nothing your panels send out can be measured, so nothing earns
+        credit.
       </div>
     );
   }
@@ -334,6 +348,57 @@ function AddSolar({
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * The household's inverters, each with its net-metering verdict.
+ *
+ * The verdict is shown here as well as on the Applications page because this
+ * is where somebody looks after having panels fitted, and "produces 12.4 kWh a
+ * day, needs 15.9" is the sentence that tells them whether to add panels
+ * before applying rather than after being refused.
+ */
+function InverterList({ inverters }: { inverters: Inverter[] }) {
+  if (inverters.length === 0) {
+    return (
+      <EmptyState
+        title="No panels registered"
+        hint="Add solar once an installer has fitted it. Generation is measured by the inverter, so it starts reporting straight away — net metering is a separate application."
+      />
+    );
+  }
+  return (
+    <ul className="divide-y divide-hairline px-5">
+      {inverters.map((inv) => (
+        <li key={inv.device_id} className="py-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-sm text-ink">
+                  {inv.serial_no}
+                </span>
+                <Badge tone="neutral">Inverter</Badge>
+                {inv.billing_point_id ? (
+                  <Badge tone="good">Net metered</Badge>
+                ) : inv.eligible ? (
+                  <Badge tone="good">Ready to apply</Badge>
+                ) : (
+                  <Badge tone="warning">Not yet eligible</Badge>
+                )}
+              </div>
+              <p className="mt-0.5 text-xs text-ink-2">
+                {inv.ac_capacity_kw} kW · {inv.array_count} array
+                {inv.array_count === 1 ? "" : "s"}
+                {inv.generation_daily_kwh && (
+                  <> · {inv.generation_daily_kwh} kWh a day on average</>
+                )}
+              </p>
+            </div>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 

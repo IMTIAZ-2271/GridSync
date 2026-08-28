@@ -218,10 +218,16 @@ SET meter_id = m.device_id
 FROM new_meters m
 WHERE m.serial_no = format('SEED-MTR-%s', to_char(s.n, 'FM00'));
 
+-- Bidirectional only where the site is actually net-metered. A meter that can
+-- report an export split is the outcome of a net-metering agreement (rule 6);
+-- the three non-solar sites carry an ordinary unidirectional meter, which is
+-- also what makes them valid candidates for the swap flow.
 INSERT INTO meter_spec (device_id, site_id, billing_point_id, meter_flow,
                         billing_role,
                         ct_ratio, max_current_amp, phase_count, seal_no)
-SELECT s.meter_id, s.site_id, s.point_id, 'bidirectional', 'billing',
+SELECT s.meter_id, s.site_id, s.point_id,
+       (CASE WHEN s.capacity_kw > 0 THEN 'bidirectional' ELSE 'unidirectional' END)::meter_flow,
+       'billing',
        '1:1', 60.0, 1, format('SEAL-%s', to_char(s.n, 'FM0000'))
 FROM seed_site s;
 
@@ -248,10 +254,16 @@ SET inverter_id = i.device_id
 FROM new_inverters i
 WHERE i.serial_no = format('SEED-INV-%s', to_char(s.n, 'FM00'));
 
-INSERT INTO inverter_spec (device_id, ac_capacity_kw, dc_capacity_kw,
+-- site_id and billing_point_id are named here rather than inferred from
+-- device.parent_device_id: since migration d4f8a2c61e95 the inverter's own
+-- row is what says which connection it generates behind, and the parent link
+-- is physical topology only.
+INSERT INTO inverter_spec (device_id, site_id, billing_point_id,
+                           ac_capacity_kw, dc_capacity_kw,
                            mppt_count, phase_count, rated_efficiency,
                            anti_islanding)
-SELECT s.inverter_id, s.capacity_kw, (s.capacity_kw * 1.2)::numeric(8,3),
+SELECT s.inverter_id, s.site_id, s.point_id,
+       s.capacity_kw, (s.capacity_kw * 1.2)::numeric(8,3),
        2, 1, 0.9720, true
 FROM seed_site s
 WHERE s.inverter_id IS NOT NULL;
@@ -270,12 +282,12 @@ WHERE s.inverter_id IS NOT NULL;
 
 -- Active agreements for the solar sites.
 INSERT INTO net_metering_agreement (
-    site_id, billing_point_id, billing_device_id, approval_ref,
-    sanctioned_capacity_kw,
+    site_id, billing_point_id, billing_device_id, inverter_device_id,
+    approval_ref, sanctioned_capacity_kw,
     export_cap_pct, settlement_type, credit_rollover_months,
     effective_from, status
 )
-SELECT s.site_id, s.point_id, s.meter_id,
+SELECT s.site_id, s.point_id, s.meter_id, s.inverter_id,
        format('SEED-NMA-%s', to_char(s.n, 'FM0000')),
        s.capacity_kw, 70.00, 'rollover_only', 12,
        (CURRENT_DATE - INTERVAL '18 months')::date, 'active'

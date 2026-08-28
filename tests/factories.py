@@ -253,7 +253,14 @@ async def add_reading(conn: asyncpg.Connection, device_id: str, batch_id: str,
 
 async def make_inverter(conn: asyncpg.Connection, site_id: str,
                         **overrides) -> str:
-    """An inverter device plus its inverter_spec subtype row."""
+    """An inverter device plus its inverter_spec subtype row.
+
+    `billing_point_id` defaults to None, which is the ordinary state of newly
+    installed panels since migration d4f8a2c61e95: an inverter belongs to a
+    site, and joins a connection only when net metering is granted and a
+    bidirectional meter can measure its export (rule 6). Pass
+    `billing_point_id=` to build the net-metered case.
+    """
     tag = overrides.pop("tag", unique_suffix())
     device_id = await conn.fetchval(
         """
@@ -266,10 +273,13 @@ async def make_inverter(conn: asyncpg.Connection, site_id: str,
     )
     await conn.execute(
         """
-        INSERT INTO inverter_spec (device_id, ac_capacity_kw, dc_capacity_kw)
-        VALUES ($1, $2, $3)
+        INSERT INTO inverter_spec (device_id, site_id, billing_point_id,
+                                   ac_capacity_kw, dc_capacity_kw)
+        VALUES ($1, $2, $3, $4, $5)
         """,
         device_id,
+        site_id,
+        overrides.pop("billing_point_id", None),
         overrides.pop("ac_capacity_kw", Decimal("5.000")),
         overrides.pop("dc_capacity_kw", Decimal("6.000")),
     )

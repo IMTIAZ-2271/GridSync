@@ -11,6 +11,12 @@ import {
 import DispatchVisit from "../components/DispatchVisit";
 import { meterApplicationStage } from "../lib/fulfilment";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -51,6 +57,10 @@ import {
  * hardware they never saw is the gap the whole flow closes.
  */
 export default function GovernmentMeterApplications() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.governmentMeterApplications);
   const queryClient = useQueryClient();
   const [includeDecided, setIncludeDecided] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
@@ -172,6 +182,7 @@ export default function GovernmentMeterApplications() {
         <ul className="divide-y divide-hairline">
           {queue.data.map((app) => (
             <ApplicationRow
+              unread={isUnread(app.submitted_at, watermark)}
               key={app.application_id}
               app={app}
               visit={orderFor(app.application_id)}
@@ -204,6 +215,7 @@ const STATUS: Record<string, { label: string; tone: string }> = {
 };
 
 function ApplicationRow({
+  unread,
   app,
   visit,
   rejecting,
@@ -216,6 +228,8 @@ function ApplicationRow({
   onRegister,
   onReject,
 }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean;
   app: MeterApplicationQueueRow;
   visit: WorkOrder | undefined;
   rejecting: boolean;
@@ -249,7 +263,7 @@ function ApplicationRow({
     open && (!visit || ["cancelled", "failed"].includes(visit.status));
 
   return (
-    <li className="px-5 py-4">
+    <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="font-medium text-ink">

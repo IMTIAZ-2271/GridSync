@@ -10,6 +10,12 @@ import {
   humanize,
 } from "../lib/issues";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -46,6 +52,10 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = {
 const SETTLED = new Set(["resolved", "closed", "duplicate"]);
 
 export default function SupplierIssues() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.supplierIssues);
   const [openOnly, setOpenOnly] = useState(true);
   const [mineOnly, setMineOnly] = useState(false);
 
@@ -122,7 +132,11 @@ export default function SupplierIssues() {
       ) : (
         <ul className="divide-y divide-hairline">
           {shown.map((issue) => (
-            <IssueRow key={issue.issue_id} issue={issue} />
+            <IssueRow
+              key={issue.issue_id}
+              issue={issue}
+              unread={isUnread(issue.reported_at, watermark)}
+            />
           ))}
         </ul>
       )}
@@ -139,13 +153,16 @@ export default function SupplierIssues() {
   );
 }
 
-function IssueRow({ issue }: { issue: Issue }) {
+function IssueRow({
+  unread, issue }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean; issue: Issue }) {
   const age = Math.floor(
     (Date.now() - +new Date(issue.reported_at)) / 86_400_000,
   );
 
   return (
-    <li className="px-5 py-4">
+    <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex flex-wrap items-center gap-2 font-medium text-ink">

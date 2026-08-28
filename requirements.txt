@@ -12,3 +12,4 @@ apscheduler
 argon2-cffi
 pyjwt
 email-validator
+httpx

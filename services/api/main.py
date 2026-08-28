@@ -46,11 +46,13 @@ from .routes_applications import router as applications_router
 from .routes_auth import router as auth_router
 from .orgs import router as orgs_router
 from .routes_devices import router as devices_router
+from .routes_inverters import router as inverters_router
 from .routes_issues import router as issues_router
 from .routes_meters import router as meters_router
 from .routes_notifications import router as notifications_router
 from .routes_ratings import router as ratings_router
 from .routes_sites import router as sites_router
+from .routes_views import router as views_router
 from .routes_work_orders import router as work_orders_router
 from .routes_workers import router as workers_router
 
@@ -96,9 +98,11 @@ app.include_router(auth_router)
 app.include_router(orgs_router)
 app.include_router(sites_router)
 app.include_router(devices_router)
+app.include_router(inverters_router)
 app.include_router(meters_router)
 app.include_router(issues_router)
 app.include_router(notifications_router)
+app.include_router(views_router)
 app.include_router(ratings_router)
 app.include_router(work_orders_router)
 app.include_router(workers_router)

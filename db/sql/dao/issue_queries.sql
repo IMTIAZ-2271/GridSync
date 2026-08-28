@@ -234,6 +234,13 @@ WHERE i.supplier_id = $1
              SELECT account_id FROM supplier_profile WHERE supplier_id = $1
          )
    )
+-- Three bands, then newest first inside the last one. Unresolved above
+-- closed; complaints named against this firm above ones it is merely near;
+-- and within that, the most recent arrival on top.
+--
+-- IS NOT DISTINCT FROM, not '=': (i.supplier_id = $1) is NULL rather than
+-- FALSE for an issue naming nobody, and DESC sorts NULLs first in PostgreSQL,
+-- which put every unrelated complaint above the firm's own.
 ORDER BY (i.status IN ('resolved', 'closed', 'duplicate')) ASC,
          (i.supplier_id IS NOT DISTINCT FROM $1) DESC,
-         i.reported_at ASC;
+         i.reported_at DESC;

@@ -143,14 +143,14 @@ CROSS JOIN LATERAL (
     FROM device_reading r
     JOIN device d ON d.device_id = r.device_id
     LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
-    -- An inverter has no billing point of its own; it hangs off the meter that
-    -- measures it (device.parent_device_id), so scoping by point has to reach
-    -- through the parent or the solar half of a per-meter view would vanish.
-    LEFT JOIN meter_spec pms ON pms.device_id = d.parent_device_id
+    -- An inverter names its own point since migration d4f8a2c61e95, so the
+    -- solar half of a per-connection view comes off inverter_spec rather than
+    -- being chased through the meter the inverter happens to hang behind.
+    LEFT JOIN inverter_spec ivs ON ivs.device_id = d.device_id
     WHERE d.site_id = s.site_id
       AND ($2::uuid IS NULL
            OR ms.billing_point_id = $2
-           OR pms.billing_point_id = $2)
+           OR ivs.billing_point_id = $2)
       AND r.interval_start >= now() - INTERVAL '30 days'
 ) win
 WHERE s.site_id = $1;
@@ -178,10 +178,10 @@ WHERE s.site_id = $1;
 -- connecting from another zone and the daily bars would straddle midnight --
 -- the same class of bug the partitioning tests exist to catch.
 --
--- $3 narrows to one billing point, or NULL for the whole site. An inverter has
--- no point of its own, so the filter reaches through device.parent_device_id:
--- without that, selecting a connection would show its import and hide the
--- generation measured behind the very same meter.
+-- $3 narrows to one billing point, or NULL for the whole site. Both subtypes
+-- name their own point, so the filter is an OR across meter_spec and
+-- inverter_spec: without the inverter half, selecting a connection would show
+-- its import and hide the generation measured behind the very same meter.
 WITH w AS (
     SELECT CASE $2::text
                -- Rolling 23 hours back from the current hour, not midnight
@@ -214,12 +214,12 @@ FROM w
 CROSS JOIN device_reading r
 JOIN device d ON d.device_id = r.device_id
 LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
-LEFT JOIN meter_spec pms ON pms.device_id = d.parent_device_id
+LEFT JOIN inverter_spec ivs ON ivs.device_id = d.device_id
 WHERE d.site_id = $1
   AND r.interval_start >= w.from_ts
   AND ($3::uuid IS NULL
        OR ms.billing_point_id = $3
-       OR pms.billing_point_id = $3)
+       OR ivs.billing_point_id = $3)
 GROUP BY 1
 ORDER BY 1;
 
@@ -397,9 +397,14 @@ SELECT pt.point_id,
            SELECT 1
            FROM solar_array sa
            JOIN device inv ON inv.device_id = sa.inverter_device_id
+           JOIN inverter_spec ivs ON ivs.device_id = sa.inverter_device_id
            WHERE sa.status <> 'decommissioned'
              AND inv.removed_at IS NULL
-             AND inv.parent_device_id = meter.device_id
+             -- Keyed on the point, not on `meter.device_id`. A connection can
+             -- carry solar while its meter is mid-swap (or absent), and
+             -- hanging this off the meter made has_solar go false for the
+             -- moment the old meter was retired.
+             AND ivs.billing_point_id = pt.point_id
        ) AS has_solar
 FROM billing_point pt
 LEFT JOIN LATERAL (
@@ -438,14 +443,22 @@ RETURNING device_id;
 
 
 -- name: create_meter_spec
--- Always bidirectional/billing: this path only ever registers the one meter
--- rule 7 requires *per billing point*. ct_ratio and phase_count are sane
--- installer defaults, not consumer input.
+-- Always billing -- this path registers the one meter rule 7 requires *per
+-- billing point*. ct_ratio and phase_count are sane installer defaults, not
+-- consumer input.
+--
+-- $4 is meter_flow, and it is a parameter rather than the literal
+-- 'bidirectional' it used to be. An ordinary connection gets a
+-- *unidirectional* meter: it measures what the household draws and cannot
+-- know an export split (rule 6). A meter only becomes bidirectional as the
+-- outcome of a net-metering agreement, which is the one act that makes export
+-- measurable. Hardcoding 'bidirectional' made every meter in the system look
+-- net-metered, and left `swappable_meters_for_site` with nothing to offer.
 INSERT INTO meter_spec (
     device_id, site_id, billing_point_id, meter_flow, billing_role,
     ct_ratio, phase_count
 )
-VALUES ($1, $2, $3, 'bidirectional', 'billing', '1:1', 1);
+VALUES ($1, $2, $3, $4::meter_flow, 'billing', '1:1', 1);
 
 
 -- name: point_billing_device
@@ -458,6 +471,10 @@ WHERE ms.billing_point_id = $1
 
 
 -- name: create_inverter_device
+-- $2 (parent_device_id) is physical topology and may be NULL: since migration
+-- d4f8a2c61e95 an inverter can be installed on a site that has no meter at
+-- all, which is the ordinary case when panels are fitted before the household
+-- applies for net metering.
 INSERT INTO device (
     site_id, parent_device_id, device_type, serial_no, manufacturer, model,
     interval_minutes, device_key_hash, installed_at, status
@@ -469,11 +486,17 @@ RETURNING device_id;
 -- name: create_inverter_spec
 -- ac_capacity_kw is the clipping ceiling; dc_capacity_kw is set ~20% above it
 -- by the caller, matching db/sql/seed_demo.sql's ratio.
+--
+-- $3 (billing_point_id) is the connection this inverter generates behind, and
+-- is NULL until net metering is granted. That is the normal state of freshly
+-- installed panels, not an error: generation is measured by the inverter and
+-- has no bearing on a bill until a bidirectional meter exists (rule 6).
 INSERT INTO inverter_spec (
-    device_id, ac_capacity_kw, dc_capacity_kw, mppt_count, phase_count,
+    device_id, site_id, billing_point_id,
+    ac_capacity_kw, dc_capacity_kw, mppt_count, phase_count,
     rated_efficiency, anti_islanding
 )
-VALUES ($1, $2, $3, 2, 1, 0.9720, true);
+VALUES ($1, $2, $3, $4, $5, 2, 1, 0.9720, true);
 
 
 -- name: create_solar_array
@@ -492,13 +515,18 @@ RETURNING array_id;
 -- status = 'pending': a new site's agreement joins the same approval queue
 -- db/sql/seed_demo.sql seeds for its non-solar sites, reviewed on
 -- /government/agreements rather than auto-approved on registration.
+--
+-- $6 is the inverter the application was assessed against. Stored rather than
+-- re-derived: the verdict is a measurement of one specific roof over one
+-- specific 30 days, and an agreement that did not name the hardware would be
+-- a decision nobody could re-check afterwards.
 INSERT INTO net_metering_agreement (
     site_id, billing_point_id, billing_device_id, approval_ref,
-    sanctioned_capacity_kw,
+    sanctioned_capacity_kw, inverter_device_id,
     export_cap_pct, settlement_type, credit_rollover_months,
     effective_from, status
 )
-VALUES ($1, $2, $3, $4, $5, 70.00, 'rollover_only', 12, CURRENT_DATE,
+VALUES ($1, $2, $3, $4, $5, $6, 70.00, 'rollover_only', 12, CURRENT_DATE,
         'pending')
 RETURNING agreement_id;
 
@@ -515,15 +543,16 @@ RETURNING agreement_id;
 -- Decommissioned arrays and removed inverters are excluded -- an array that
 -- no longer exists must not keep inflating the meter's netted export.
 --
--- Scoped by the inverter's parent meter rather than by site: with several
+-- Scoped by inverter_spec.billing_point_id rather than by site: with several
 -- billing meters on one site, netting a point's meter against the site's
 -- whole fleet of arrays would credit one connection for another's export.
+-- Panels not yet attached to any connection are correctly invisible here.
 WITH live AS (
     SELECT sa.array_id, sa.inverter_device_id
     FROM solar_array sa
     JOIN device d ON d.device_id = sa.inverter_device_id
-    JOIN meter_spec ms ON ms.device_id = d.parent_device_id
-    WHERE ms.billing_point_id = $1
+    JOIN inverter_spec ivs ON ivs.device_id = sa.inverter_device_id
+    WHERE ivs.billing_point_id = $1
       AND sa.status <> 'decommissioned'
       AND d.removed_at IS NULL
 )
@@ -549,7 +578,12 @@ SELECT (SELECT count(*) FROM live)::int AS array_count,
 SELECT agreement_id,
        sanctioned_capacity_kw,
        status,
-       effective_from
+       effective_from,
+       -- The inverter this agreement was granted for. The meter installation
+       -- reads it to bring those panels into the connection: attaching them
+       -- any earlier would claim an export the connection could not yet
+       -- measure.
+       inverter_device_id
 FROM net_metering_agreement
 WHERE billing_point_id = $1
   AND status <> 'terminated'
@@ -641,3 +675,47 @@ RETURNING site_id;
 -- high: the sweep's WHERE clause is what decides who gets told, and a household
 -- with no row is simply not considered.
 DELETE FROM site_consumption_limit WHERE site_id = $1 RETURNING site_id;
+
+
+-- name: site_solar_status
+-- What solar this SITE already carries, before another array is added.
+--
+-- The site-wide twin of point_solar_status, and the one /solar uses. Since
+-- migration d4f8a2c61e95 an inverter is installed against the site and joins
+-- a billing point only when net metering is granted, so at the moment panels
+-- are registered the site is the only scope they have.
+--
+-- capacity_kw is the AC total summed over DISTINCT inverters, for the same
+-- reason as point_solar_status: one inverter can drive several arrays, and
+-- summing per array would double-count its clipping ceiling.
+WITH live AS (
+    SELECT sa.array_id, sa.inverter_device_id
+    FROM solar_array sa
+    JOIN device d ON d.device_id = sa.inverter_device_id
+    WHERE d.site_id = $1
+      AND sa.status <> 'decommissioned'
+      AND d.removed_at IS NULL
+)
+SELECT (SELECT count(*) FROM live)::int AS array_count,
+       coalesce((
+           SELECT sum(inv.ac_capacity_kw)
+           FROM inverter_spec inv
+           WHERE inv.device_id IN (SELECT DISTINCT inverter_device_id FROM live)
+       ), 0)::numeric AS capacity_kw;
+
+
+-- name: site_billing_meters
+-- Every live billing meter on a site.
+--
+-- Used by POST /api/sites/{id}/solar to decide whether re-netting the meter
+-- against newly registered panels is unambiguous. One meter: the panels
+-- plainly offset that connection's import. More than one: there is no
+-- non-arbitrary answer until net metering attaches the inverter to a point
+-- (rule 3), so nothing is re-netted.
+SELECT d.device_id, ms.billing_point_id, ms.meter_flow::text AS meter_flow
+FROM meter_spec ms
+JOIN device d ON d.device_id = ms.device_id
+WHERE ms.site_id = $1
+  AND ms.billing_role = 'billing'
+  AND d.removed_at IS NULL
+ORDER BY d.installed_at DESC, d.device_id DESC;

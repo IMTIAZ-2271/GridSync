@@ -29,12 +29,13 @@ WHERE gp.account_id = $1;
 
 
 -- name: pending_workers
--- The queue: registrations awaiting a decision, oldest first.
+-- The queue: registrations awaiting a decision, newest first.
 --
--- Oldest-first, not newest: a queue sorted by recency buries whatever nobody
--- picked up, and someone waiting three weeks for a decision they cannot work
--- without is exactly who should be at the top. Same reasoning as the worker
--- issue triage.
+-- This used to be oldest-first, on the reasoning that a queue sorted by
+-- recency buries whoever nobody picked up. It is newest-first now because
+-- every list in the app is, and because the burying problem is answered
+-- better by the unread indicator than by the sort: an application nobody has
+-- opened stays marked until somebody does, wherever it sits on the page.
 --
 -- $1 NULL means every district (admin). Listing every pending worker to a
 -- district official would show them names they cannot act on, which reads as a
@@ -61,7 +62,8 @@ LEFT JOIN distribution_company dc
        ON dc.company_id = wp.distribution_company_id
 WHERE wp.approval_status = 'pending'
   AND ($1::text IS NULL OR wp.service_district = $1)
-ORDER BY a.created_at, a.full_name;
+-- Newest registration first.
+ORDER BY a.created_at DESC, a.full_name;
 
 
 -- name: worker_approval_row

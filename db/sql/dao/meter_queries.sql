@@ -215,7 +215,9 @@ JOIN account a ON a.account_id = ma.account_id
 LEFT JOIN meter_asset asset ON asset.meter_asset_id = ma.issued_meter_asset_id
 WHERE ($1::text IS NULL OR s.district = $1)
   AND ($2::boolean OR ma.status IN ('submitted', 'under_review'))
-ORDER BY (ma.status IN ('submitted', 'under_review')) DESC, ma.submitted_at;
+-- Undecided first, then newest first within each band.
+ORDER BY (ma.status IN ('submitted', 'under_review')) DESC,
+         ma.submitted_at DESC;
 
 
 -- name: meter_application_context

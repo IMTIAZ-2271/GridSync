@@ -343,4 +343,6 @@ WHERE i.status NOT IN ('resolved', 'closed', 'duplicate')
             AND i.consumer_disputed_at > w.completed_at
         )
   )
-ORDER BY i.severity DESC, i.reported_at;
+-- Severity band first -- a critical fault outranks a cosmetic one whenever
+-- it arrived -- then newest first within the band.
+ORDER BY i.severity DESC, i.reported_at DESC;

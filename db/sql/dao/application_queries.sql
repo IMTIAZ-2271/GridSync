@@ -109,9 +109,10 @@ JOIN supplier_company sc ON sc.supplier_id = sa.supplier_id
 WHERE sa.supplier_id = $1
   AND ($2::boolean IS NOT TRUE
        OR sa.status IN ('submitted', 'under_review'))
+-- Open applications first, then newest first inside each band. The band is
+-- what stops a decided application outranking one still waiting; the DESC is
+-- the global ordering rule. Previously the open band was oldest-first.
 ORDER BY (sa.status IN ('submitted', 'under_review')) DESC,
-         CASE WHEN sa.status IN ('submitted', 'under_review')
-              THEN sa.submitted_at END ASC,
          sa.submitted_at DESC;
 
 

@@ -15,6 +15,12 @@ import {
   isOpenApplication,
 } from "../lib/applications";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -51,6 +57,10 @@ const MOVES: Partial<
 };
 
 export default function SupplierApplications() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.supplierApplications);
   const queryClient = useQueryClient();
   const [openOnly, setOpenOnly] = useState(true);
   const [rejecting, setRejecting] = useState<string | null>(null);
@@ -137,6 +147,7 @@ export default function SupplierApplications() {
         <ul className="divide-y divide-hairline">
           {rows.map((app) => (
             <ApplicationRow
+              unread={isUnread(app.submitted_at, watermark)}
               key={app.application_id}
               app={app}
               busy={decide.isPending && decide.variables?.id === app.application_id}
@@ -167,6 +178,7 @@ export default function SupplierApplications() {
 }
 
 function ApplicationRow({
+  unread,
   app,
   busy,
   rejecting,
@@ -177,6 +189,8 @@ function ApplicationRow({
   onCancelReject,
   onConfirmReject,
 }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean;
   app: SolarApplication;
   busy: boolean;
   rejecting: boolean;
@@ -193,7 +207,7 @@ function ApplicationRow({
   );
 
   return (
-    <li className="px-5 py-4">
+    <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-medium text-ink">

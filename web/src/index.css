@@ -43,6 +43,20 @@
   --color-status-critical: #d03b3b;
   --color-status-good-text: #006300;
 
+  /*
+   * Unread. A row that arrived since this account last opened the list wears
+   * this wash for exactly the visit that clears it.
+   *
+   * A wash, not a status colour: "new" is not a severity, and borrowing
+   * status-warning's amber would make an ordinary arrival look like a problem.
+   * It is deliberately close to the surface -- 1.03:1 against it -- because it
+   * sits *behind* body text that must keep its own contrast, and because the
+   * row is also marked by the dot in the nav. Status never travels by colour
+   * alone here, and neither does this.
+   */
+  --color-unread: #eaf2fd;
+  --color-unread-edge: #2a78d6;
+
   /* Portal accents for the switcher. */
   --color-portal-consumer: #2a78d6;
   --color-portal-worker: #eb6834;

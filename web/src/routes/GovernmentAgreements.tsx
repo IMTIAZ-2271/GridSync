@@ -14,6 +14,12 @@ import DispatchVisit from "../components/DispatchVisit";
 import { netMeteringStage } from "../lib/fulfilment";
 import { humanize } from "../lib/issues";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -41,6 +47,10 @@ import {
  * confirmation, because it is neither expected nor reversible.
  */
 export default function GovernmentAgreements() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.governmentAgreements);
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState<string | null>(null);
 
@@ -125,6 +135,7 @@ export default function GovernmentAgreements() {
         <ul className="divide-y divide-hairline">
           {pending.data.map((agreement) => (
             <AgreementRow
+              unread={isUnread(agreement.created_at, watermark)}
               key={agreement.agreement_id}
               agreement={agreement}
               visit={orderFor(agreement.agreement_id)}
@@ -166,6 +177,7 @@ export default function GovernmentAgreements() {
 }
 
 function AgreementRow({
+  unread,
   agreement,
   visit,
   confirming,
@@ -176,6 +188,8 @@ function AgreementRow({
   onRegister,
   pending,
 }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean;
   agreement: Agreement;
   visit: WorkOrder | undefined;
   confirming: boolean;
@@ -199,7 +213,7 @@ function AgreementRow({
   const needsVisit = !visit || ["cancelled", "failed"].includes(visit.status);
 
   return (
-    <li className="px-5 py-4">
+    <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-ink">

@@ -16,6 +16,12 @@ import {
   humanize,
 } from "../lib/issues";
 import {
+  VIEWS,
+  isUnread,
+  unreadRowClass,
+  useMarkViewSeen,
+} from "../lib/unread";
+import {
   Badge,
   Card,
   CardHeader,
@@ -54,6 +60,10 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = {
 const SETTLED = new Set(["resolved", "closed", "duplicate"]);
 
 export default function WorkerIssues() {
+  // Marks this list seen on open and hands back the watermark it
+  // replaced, so rows that arrived since the last visit are lit for
+  // exactly this render and normal on the next load.
+  const watermark = useMarkViewSeen(VIEWS.workerIssues);
   const [openOnly, setOpenOnly] = useState(true);
   const queryClient = useQueryClient();
 
@@ -127,6 +137,7 @@ export default function WorkerIssues() {
         <ul className="divide-y divide-hairline">
           {shown.map((issue) => (
             <IssueRow
+              unread={isUnread(issue.reported_at, watermark)}
               key={issue.issue_id}
               issue={issue}
               busy={advance.isPending && advance.variables?.id === issue.issue_id}
@@ -152,10 +163,13 @@ export default function WorkerIssues() {
 }
 
 function IssueRow({
+  unread,
   issue,
   busy,
   onAdvance,
 }: {
+  /** Arrived since this account last opened the list. */
+  unread: boolean;
   issue: Issue;
   busy: boolean;
   onAdvance: (status: TriageStatus) => void;
@@ -166,7 +180,7 @@ function IssueRow({
   const next = NEXT_ISSUE_STATUS[issue.status];
 
   return (
-    <li className="px-5 py-4">
+    <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-medium text-ink">{issue.title}</p>

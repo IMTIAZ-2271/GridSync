@@ -6,6 +6,7 @@ import { portalsForRole } from "../auth/RequireAuth";
 import Logo from "./Logo";
 import NotificationBell from "./NotificationBell";
 import SitePicker from "./SitePicker";
+import UnreadDot from "./UnreadDot";
 
 /**
  * App shell: portal switcher, the active portal's sub-nav, then the page.
@@ -98,6 +99,9 @@ export default function Layout() {
                   }
                 >
                   {route.label}
+                  {/* Only rendered when something has actually arrived since
+                      this account last opened that list -- see UnreadDot. */}
+                  {route.viewKey && <UnreadDot viewKey={route.viewKey} />}
                 </NavLink>
               ))}
             </nav>

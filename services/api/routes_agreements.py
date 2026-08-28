@@ -14,6 +14,13 @@ from .auth import Principal, require_role
 from .db import Conn
 from .notify import notify, notify_site_owner
 from .queries import sql
+from .routes_inverters import (
+    MIN_OBSERVED_DAYS,
+    PEAK_SUN_HOURS,
+    PERFORMANCE_FLOOR,
+    SURPLUS_RATIO,
+    Inverter,
+)
 # Shared: the net-metering inspection is guarded on exactly the same three
 # facts as the meter installation, so it explains itself the same way.
 from .routes_meters import ApplicationVisit, visit_of, why_not_ready
@@ -62,13 +69,26 @@ class AgreementStatusUpdate(BaseModel):
 @router.get("/api/agreements/pending", response_model=list[Agreement])
 async def pending_agreements(
     conn: Conn,
-    _: Annotated[
+    principal: Annotated[
         Principal, Depends(require_role("government", "supplier", "admin"))
     ],
 ) -> list[Agreement]:
-    # The supplier submits these and needs to watch the queue; the government
-    # is what decides them.
-    rows = await conn.fetch(sql("list_pending_agreements"))
+    """The approval queue.
+
+    The supplier submits these and needs to watch the queue; the government is
+    what decides them -- and an official is confined to their own district,
+    because every write below already is. Showing them the whole country's
+    applications meant every button on a neighbouring district's row answered
+    404, which reads as a broken page rather than as a boundary.
+
+    A supplier is fleet-wide and passes NULL, as it does everywhere else.
+    """
+    scope = (
+        await _agreement_scope(conn, principal)
+        if principal.role == "government"
+        else None
+    )
+    rows = await conn.fetch(sql("list_pending_agreements"), scope)
     return [Agreement(**dict(r)) for r in rows]
 
 
@@ -168,6 +188,15 @@ class NetMeteringApplication(BaseModel):
 
 
 class NetMeteringApply(BaseModel):
+    """Both halves of the application, and both are required.
+
+    The inverter is what is being assessed; the billing point names the meter
+    the household has chosen to give up. Neither implies the other -- an
+    inverter belongs to no connection until this agreement is granted -- so
+    neither can be defaulted.
+    """
+
+    inverter_device_id: UUID
     billing_point_id: UUID
 
 
@@ -207,27 +236,57 @@ async def apply_for_net_metering(
     payload: NetMeteringApply,
     principal: Annotated[Principal, Depends(require_role("consumer"))],
 ) -> NetMeteringApplication:
-    """Ask the regulator to credit what this connection exports.
+    """Ask the regulator to credit what these panels export.
 
-    Keyed on a **billing point**, not a site (rule 3). A household with two
-    connections may have panels on one and not the other, and the agreement,
-    the credit ledger and the bill all follow the point.
+    **Two mandatory choices, and the first gates the second.** The household
+    picks an inverter, the system measures whether it actually produces more
+    than the property consumes, and only then does it pick which of its normal
+    billing meters to give up for a bidirectional one.
 
-    Three preconditions, in the order they stop being the caller's fault:
-    the connection must be theirs (404), it must have a billing meter -- rule 6
-    says only the bidirectional meter can know the import/export split, so
-    without one there is no export to credit -- and it must have at least one
-    live array. `nma_no_overlap` is what refuses a second live application, and
-    it is caught rather than pre-checked so two tabs cannot both win.
+    The eligibility test is re-run here, not trusted from the client. The
+    dropdown gating on the page is a convenience -- the same posture as
+    `RequireAuth` and the work-order status buttons -- and this is the
+    enforcement. A caller that skips the page must not skip the check.
 
-    `sanctioned_capacity_kw` is taken from the hardware actually installed on
-    the connection, never from the request body: it is the number the regulator
-    is being asked to approve, and a caller-chosen one would let a household
-    apply for a capacity it has not built.
+    Preconditions, in the order they stop being the caller's fault:
+
+    1. the inverter is theirs (404),
+    2. the connection is theirs (404),
+    3. both are on the same site (422) -- panels cannot net a meter at another
+       address,
+    4. the connection has a billing meter (409): rule 6 says only a meter at
+       the grid boundary can know the import/export split, so there has to be
+       one there to swap,
+    5. that meter is not already bidirectional (409): the swap has already
+       happened,
+    6. the inverter clears the production gate (409, with the numbers).
+
+    `nma_no_overlap` is what refuses a second live agreement on one connection,
+    and it is *caught* rather than pre-checked, so two tabs cannot both win.
+
+    `sanctioned_capacity_kw` is the chosen inverter's own AC rating, never a
+    figure from the request body: it is what the regulator is being asked to
+    approve, and a caller-chosen one would let a household apply for a capacity
+    it has not built.
     """
+    inverter = await conn.fetchrow(
+        sql("inverter_for_account"), payload.inverter_device_id, principal.account_id
+    )
+    if inverter is None:
+        raise HTTPException(status_code=404, detail="inverter not found")
+
     point = await conn.fetchrow(sql("point_for_application"), payload.billing_point_id)
     if point is None or point["account_id"] != principal.account_id:
         raise HTTPException(status_code=404, detail="connection not found")
+
+    if point["site_id"] != inverter["site_id"]:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "the inverter and the connection are at different addresses; "
+                "panels can only be net-metered against a meter on their own site"
+            ),
+        )
 
     billing_device_id = await conn.fetchval(
         sql("point_billing_device"), point["point_id"]
@@ -236,20 +295,33 @@ async def apply_for_net_metering(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"'{point['point_label']}' has no billing meter, so it cannot "
-                "export anything to credit"
+                f"'{point['point_label']}' has no billing meter, so there is "
+                "nothing to swap for a bidirectional one"
             ),
         )
 
-    solar = await conn.fetchrow(sql("point_solar_status"), point["point_id"])
-    if solar["array_count"] == 0:
+    swappable = {
+        r["billing_point_id"]
+        for r in await conn.fetch(sql("swappable_meters_for_site"), point["site_id"])
+    }
+    if point["point_id"] not in swappable:
+        # Either the meter is already bidirectional or the connection already
+        # carries a live agreement. Both mean the same thing to the household:
+        # this is not a connection that can be swapped right now.
         raise HTTPException(
             status_code=409,
             detail=(
-                f"register the solar array on '{point['point_label']}' before "
-                "applying for net metering"
+                f"'{point['point_label']}' cannot be swapped: its meter is "
+                "already bidirectional, or the connection already has a "
+                "net-metering application"
             ),
         )
+
+    verdict = await _eligibility(conn, principal.account_id, payload.inverter_device_id)
+    if verdict is None:
+        raise HTTPException(status_code=404, detail="inverter not found")
+    if not verdict.eligible:
+        raise HTTPException(status_code=409, detail=verdict.blocking_reason)
 
     async with conn.transaction():
         try:
@@ -257,7 +329,8 @@ async def apply_for_net_metering(
                 sql("create_net_metering_agreement"),
                 point["site_id"], point["point_id"], billing_device_id,
                 f"NMA-{uuid4().hex[:10].upper()}",
-                solar["capacity_kw"],
+                verdict.ac_capacity_kw,
+                payload.inverter_device_id,
             )
         except asyncpg.ExclusionViolationError:
             raise HTTPException(
@@ -284,7 +357,8 @@ async def apply_for_net_metering(
                     f"{principal.full_name} has applied for net metering on "
                     f"{owner['point_label']} at {owner['site_label']} "
                     f"({owner['district']}), for "
-                    f"{solar['capacity_kw']} kW of installed capacity."
+                    f"{verdict.ac_capacity_kw} kW of installed capacity "
+                    f"producing {verdict.generation_daily_kwh} kWh a day."
                 ),
                 severity="info",
                 entity_type="agreement",
@@ -293,6 +367,26 @@ async def apply_for_net_metering(
             )
 
     return await _my_application_or_404(conn, principal, agreement_id)
+
+
+async def _eligibility(
+    conn: asyncpg.Connection, account_id: UUID, inverter_device_id: UUID
+) -> Inverter | None:
+    """Re-run the production gate for one inverter.
+
+    Reads the same statement `GET /api/inverters` does, with the same policy
+    constants, so the page and the enforcement can never disagree about who
+    qualifies.
+    """
+    rows = await conn.fetch(
+        sql("inverters_for_account"),
+        account_id,
+        SURPLUS_RATIO, PEAK_SUN_HOURS, PERFORMANCE_FLOOR, MIN_OBSERVED_DAYS,
+    )
+    for r in rows:
+        if r["device_id"] == inverter_device_id:
+            return Inverter(**dict(r))
+    return None
 
 
 @router.delete(

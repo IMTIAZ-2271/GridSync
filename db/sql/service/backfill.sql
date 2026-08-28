@@ -68,6 +68,13 @@ DECLARE
     -- then falls back to the whole site, which refuses more than it must but
     -- never less.
     v_point_id    uuid;
+
+    -- Whether this meter can report an export split at all. A unidirectional
+    -- meter measures only what crosses INTO the property; solar it cannot
+    -- send back is simply not measured, and writing an export figure for it
+    -- would be inventing a measurement the hardware cannot make (rule 6).
+    v_bidirectional boolean := false;
+
     v_batch_id    uuid;
     v_window_from timestamptz;
     v_window_to   timestamptz;
@@ -88,16 +95,22 @@ BEGIN
             USING ERRCODE = '23503';
     END IF;
 
-    -- A meter names its point directly; an inverter reaches one through the
-    -- billing meter it hangs off (see create_inverter_device). Resolving this
-    -- is what keeps a second connection at an already-billed site
-    -- backfillable: a site-wide guard would see the first point's frozen
-    -- periods and refuse to write a single row for the new meter.
-    SELECT coalesce(own.billing_point_id, parent.billing_point_id)
-      INTO v_point_id
+    -- Both subtypes name their point on their own row since migration
+    -- d4f8a2c61e95 -- the inverter no longer reaches one through the meter it
+    -- hangs off, because it may not hang off one at all. Resolving this is
+    -- what keeps a second connection at an already-billed site backfillable:
+    -- a site-wide guard would see the first point's frozen periods and refuse
+    -- to write a single row for the new meter.
+    --
+    -- NULL is a legitimate answer for an inverter whose panels are not part
+    -- of any connection yet. Rule 8's guard below is a no-op in that case,
+    -- correctly: with no billing point there is no period to have frozen.
+    SELECT coalesce(own.billing_point_id, inv.billing_point_id),
+           coalesce(own.meter_flow = 'bidirectional', false)
+      INTO v_point_id, v_bidirectional
     FROM device d
-    LEFT JOIN meter_spec own    ON own.device_id = d.device_id
-    LEFT JOIN meter_spec parent ON parent.device_id = d.parent_device_id
+    LEFT JOIN meter_spec    own ON own.device_id = d.device_id
+    LEFT JOIN inverter_spec inv ON inv.device_id = d.device_id
     WHERE d.device_id = p_device_id;
 
     IF v_device_type NOT IN ('meter', 'inverter') THEN
@@ -158,8 +171,17 @@ BEGIN
             voltage_avg, frequency_avg, source, quality, ingest_batch_id
         )
         SELECT p_device_id, c.ts, 30,
+               -- Import falls by whatever the panels covered, whether or not
+               -- the connection is net-metered: self-consumption is physics,
+               -- not a tariff. Export is the half that needs a bidirectional
+               -- meter, so on a unidirectional one it is zero -- the surplus
+               -- exists but nothing measures it, which is precisely why net
+               -- metering requires the swap.
                greatest(0, c.consumption_kwh - c.generation_kwh)::numeric(12,4),
-               greatest(0, c.generation_kwh - c.consumption_kwh)::numeric(12,4),
+               CASE WHEN v_bidirectional
+                    THEN greatest(0, c.generation_kwh - c.consumption_kwh)
+                    ELSE 0
+               END::numeric(12,4),
                NULL,
                round((228 + random() * 8)::numeric, 2),
                round((49.9 + random() * 0.2)::numeric, 3),

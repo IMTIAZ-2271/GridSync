@@ -9,11 +9,20 @@
  * to hang the role each portal requires, and the API is where it gets checked.
  */
 
+import { VIEWS, type ViewKey } from "./lib/unread";
+
 export type PortalId = "consumer" | "worker" | "government" | "supplier";
 
 export interface PortalRoute {
   path: string;
   label: string;
+  /**
+   * The list this page shows, if it carries an unread indicator. Must be a
+   * key from VIEWS in lib/unread.ts; a page without one simply never shows a
+   * dot. Site-scoped lists (bills, meters) are deliberately left off -- see
+   * lib/unreadSources.ts.
+   */
+  viewKey?: ViewKey;
 }
 
 export interface Portal {
@@ -40,9 +49,9 @@ export const PORTALS: Portal[] = [
       { path: "meters", label: "Meters" },
       { path: "bills", label: "Bills" },
       { path: "devices", label: "Equipment" },
-      { path: "issues", label: "Report an issue" },
-      { path: "applications", label: "Applications" },
-      { path: "visits", label: "Visits" },
+      { path: "issues", label: "Report an issue", viewKey: VIEWS.consumerIssues },
+      { path: "applications", label: "Applications", viewKey: VIEWS.consumerApplications },
+      { path: "visits", label: "Visits", viewKey: VIEWS.consumerVisits },
       { path: "settings", label: "Settings" },
     ],
   },
@@ -53,8 +62,8 @@ export const PORTALS: Portal[] = [
     accent: "bg-portal-worker",
     base: "/worker",
     routes: [
-      { path: "", label: "Work orders" },
-      { path: "issues", label: "Issue queue" },
+      { path: "", label: "Work orders", viewKey: VIEWS.workerOrders },
+      { path: "issues", label: "Issue queue", viewKey: VIEWS.workerIssues },
     ],
   },
   {
@@ -65,10 +74,10 @@ export const PORTALS: Portal[] = [
     base: "/government",
     routes: [
       { path: "", label: "By area" },
-      { path: "agreements", label: "Pending agreements" },
+      { path: "agreements", label: "Pending agreements", viewKey: VIEWS.governmentAgreements },
       { path: "net-metering", label: "Net metering" },
-      { path: "workers", label: "Worker approvals" },
-      { path: "meter-applications", label: "Meter applications" },
+      { path: "workers", label: "Worker approvals", viewKey: VIEWS.governmentWorkers },
+      { path: "meter-applications", label: "Meter applications", viewKey: VIEWS.governmentMeterApplications },
     ],
   },
   {
@@ -79,9 +88,9 @@ export const PORTALS: Portal[] = [
     base: "/supplier",
     routes: [
       { path: "", label: "Sites" },
-      { path: "dispatch", label: "Dispatch" },
-      { path: "applications", label: "Applications" },
-      { path: "issues", label: "Complaints" },
+      { path: "dispatch", label: "Dispatch", viewKey: VIEWS.supplierDispatch },
+      { path: "applications", label: "Applications", viewKey: VIEWS.supplierApplications },
+      { path: "issues", label: "Complaints", viewKey: VIEWS.supplierIssues },
       { path: "equipment", label: "Equipment" },
     ],
   },
