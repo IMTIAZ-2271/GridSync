@@ -33,6 +33,7 @@ number a consumer is being asked to pay.
 """
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -81,12 +82,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# The Vite dev server. Credentials are carried in an Authorization header
-# rather than a cookie, so this list is what stops another origin's script from
-# reading responses on a logged-in user's behalf -- keep it exact.
+# Credentials are carried in an Authorization header rather than a cookie, so
+# this list is what stops another origin's script from reading responses on a
+# logged-in user's behalf -- keep it exact. The default is the Vite dev server;
+# a deployment names its own front end in CORS_ORIGINS (comma-separated),
+# because the API and the site no longer share an origin once the build is
+# served by a CDN rather than proxied by Vite.
+#
+# No wildcard, deliberately. `allow_credentials=True` makes browsers reject
+# "*" anyway, and a regex would quietly re-admit every preview deployment.
+DEV_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.environ.get("CORS_ORIGINS", DEV_ORIGINS).split(",")
+        if origin.strip()
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

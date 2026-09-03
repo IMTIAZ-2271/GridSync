@@ -13,7 +13,13 @@
  * to the screen.
  */
 
-const BASE = "/api";
+// Same-origin by default: `npm run dev` proxies /api to port 8000 (see
+// vite.config.ts), so a local build needs no configuration at all. A hosted
+// build has no proxy -- the site is static files on a CDN and the API is a
+// separate host -- so VITE_API_BASE names the API's absolute origin, including
+// the /api prefix. Vite inlines it at build time, which is why it must never
+// hold a secret: it ships inside the bundle.
+const BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
 // --------------------------------------------------------------------------
 // Bearer token
