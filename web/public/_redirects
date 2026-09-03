@@ -1,6 +1,0 @@
-# Cloudflare Pages serves static files, so a deep link like /consumer/bills or
-# a refresh on /government/agreements would 404 -- there is no file at that
-# path. React Router owns those paths, so hand every unmatched request the app
-# shell with a 200 (not a 301: the URL must survive for the router to read it).
-# Vite copies web/public/ into dist/ verbatim, which is where Pages looks.
-/*    /index.html   200
