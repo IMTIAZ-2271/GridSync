@@ -1290,6 +1290,8 @@ export const api = {
 
   me: () => request<Account>("/auth/me"),
 
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
+
   registerConsumer: (body: ConsumerRegisterBody) =>
     request<TokenResponse>("/auth/register/consumer", {
       method: "POST",

@@ -11,6 +11,7 @@ why verification notes older than that say so; the enum never used the word.
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
@@ -72,8 +73,12 @@ def issue_token(account_id: UUID, role: str, email: str) -> tuple[str, int]:
 
     The role is inside the token so route protection needs no database round
     trip. The cost is that a role change or a suspension does not take effect
-    until the token expires -- acceptable at a 24h TTL for a demo, and the
-    reason to add revocation before this is real.
+    until the token expires -- acceptable at a 24h TTL for a demo.
+
+    `jti` is what makes logout real rather than a client-side no-op: it names
+    this one token, distinct from any other token the same account has ever
+    been issued, so revoking it (see routes_auth.logout) cannot touch a
+    session opened from a different device.
     """
     now = datetime.now(timezone.utc)
     expires = now + TOKEN_TTL
@@ -81,6 +86,7 @@ def issue_token(account_id: UUID, role: str, email: str) -> tuple[str, int]:
         "sub": str(account_id),
         "role": role,
         "email": email,
+        "jti": str(uuid.uuid4()),
         "iat": int(now.timestamp()),
         "exp": int(expires.timestamp()),
     }
@@ -97,6 +103,7 @@ class Principal:
     role: Role
     email: str
     full_name: str
+    jti: UUID | None
 
     @property
     def sees_every_site(self) -> bool:
@@ -110,6 +117,12 @@ _UNAUTHENTICATED = HTTPException(
     headers={"WWW-Authenticate": "Bearer"},
 )
 
+_REVOKED = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="token revoked",
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
 
 async def get_current_account(request: Request) -> Principal:
     """Resolve the bearer token to a live account.
@@ -117,6 +130,14 @@ async def get_current_account(request: Request) -> Principal:
     The account is re-read on every request rather than trusted from the token
     body. The token proves who authenticated; whether that account still exists
     and is still active is a fact about now, not about when it was issued.
+
+    Revocation is folded into this same round trip: `revoked_token` is left
+    joined on the token's own `jti`, so a logged-out token is rejected here
+    without a second query. `jti` can be absent -- a token minted before this
+    check existed never got one -- and the join simply never matches a NULL,
+    which is the correct fallback: a pre-existing token was never enrollable
+    in `revoked_token` in the first place, so it behaves exactly as it always
+    has until it expires on its own.
     """
     header = request.headers.get("Authorization", "")
     scheme, _, token = header.partition(" ")
@@ -134,17 +155,29 @@ async def get_current_account(request: Request) -> Principal:
     except jwt.InvalidTokenError:
         raise _UNAUTHENTICATED from None
 
+    raw_jti = payload.get("jti")
+    jti = UUID(raw_jti) if raw_jti else None
+
     pool: asyncpg.Pool = request.app.state.pool
     row = await pool.fetchrow(
         """
-        SELECT account_id, email::text AS email, full_name, role::text AS role, status::text AS status
+        SELECT account.account_id,
+               account.email::text AS email,
+               account.full_name,
+               account.role::text AS role,
+               account.status::text AS status,
+               (revoked_token.jti IS NOT NULL) AS token_revoked
         FROM account
-        WHERE account_id = $1
+        LEFT JOIN revoked_token ON revoked_token.jti = $2::uuid
+        WHERE account.account_id = $1
         """,
         UUID(payload["sub"]),
+        jti,
     )
     if row is None:
         raise _UNAUTHENTICATED
+    if row["token_revoked"]:
+        raise _REVOKED
     if row["status"] != "active":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -156,6 +189,7 @@ async def get_current_account(request: Request) -> Principal:
         role=row["role"],  # type: ignore[arg-type]
         email=row["email"],
         full_name=row["full_name"],
+        jti=jti,
     )
 
 

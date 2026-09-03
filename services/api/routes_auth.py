@@ -14,7 +14,7 @@ serve the district -- leaves no half-registered account behind.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -24,6 +24,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from .auth import (
     SEED_PASSWORD_PLACEHOLDER,
+    TOKEN_TTL,
     CurrentAccount,
     hash_password,
     issue_token,
@@ -241,6 +242,32 @@ async def login(conn: Conn, payload: LoginIn) -> TokenOut:
         )
 
     return await _token_response_for(conn, row["account_id"])
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(conn: Conn, principal: CurrentAccount) -> None:
+    """Revoke the token this request was made with.
+
+    Genuinely ends the session, not a frontend redirect: the token's `jti` is
+    written to `revoked_token`, and get_current_account rejects that jti on
+    every request from now on -- including a replay of this same token by
+    someone who captured it before this call. A *second* call with the same
+    token gets rejected as 401 by get_current_account before it ever reaches
+    here, since the token is already revoked by then -- ON CONFLICT DO NOTHING
+    in the statement guards a narrower race, two logout requests for the same
+    still-valid token landing concurrently, not a sequential retry.
+
+    `principal.jti` is only absent for a token minted before this endpoint
+    existed; there is nothing to revoke for one of those, so this is a no-op
+    rather than a 400 -- the caller asked to be logged out and, from their
+    point of view, forgetting the token client-side achieves exactly that.
+    """
+    if principal.jti is None:
+        return
+    expires_at = datetime.now(timezone.utc) + TOKEN_TTL
+    await conn.execute(
+        sql("revoke_token"), principal.jti, principal.account_id, expires_at
+    )
 
 
 @router.get("/me", response_model=AccountOut)

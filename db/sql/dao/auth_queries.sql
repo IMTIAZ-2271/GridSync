@@ -102,6 +102,21 @@ VALUES ($1::citext, $2, $3, $4, $5, $6::account_role, 'active')
 RETURNING account_id;
 
 
+-- name: revoke_token
+-- The write half of logout. $1 is the token's own jti, not the account, so
+-- this revokes exactly the session that asked to end and leaves any other
+-- device's token alone. The read half -- rejecting a revoked jti -- lives in
+-- get_current_account's own query, not here, because it runs on every
+-- request and folding it into that lookup avoids a second round trip.
+-- ON CONFLICT DO NOTHING covers two logout requests for the same token
+-- landing concurrently, not a sequential retry -- once this commits, a
+-- second call with the same token is rejected as 401 by get_current_account
+-- before it ever reaches this statement.
+INSERT INTO revoked_token (jti, account_id, expires_at)
+VALUES ($1, $2, $3)
+ON CONFLICT (jti) DO NOTHING;
+
+
 -- name: transfer_site
 -- Hand a site to its new owner. Guarded on the site still belonging to the
 -- account the caller checked, so two people registering the same serial at

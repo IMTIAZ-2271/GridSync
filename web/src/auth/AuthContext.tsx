@@ -46,7 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(!!getToken());
   const queryClient = useQueryClient();
 
-  const signOut = useCallback(() => {
+  const clearSession = useCallback(() => {
     setToken(null);
     setAccount(null);
     resetSelectedSite();
@@ -56,13 +56,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryClient.clear();
   }, [queryClient]);
 
-  // A 401 from any request means the token is no longer good -- expired, or
-  // the account is gone. Tear down the session so the route guard redirects,
-  // rather than leaving a signed-in shell over failing requests.
+  const signOut = useCallback(() => {
+    // Fire-and-forget: revoking the token server-side must not block the UI
+    // on a slow or sleeping API (Render's free tier sleeps after 15 minutes
+    // idle -- a cold start here would leave the button spinning for ~50s).
+    // Any failure is swallowed because the local session is torn down either
+    // way; an unreachable API just means this token outlives the tab, not
+    // that "logout" visibly failed for the person who clicked it.
+    api.logout().catch(() => {});
+    clearSession();
+  }, [clearSession]);
+
+  // A 401 from any request means the token is no longer good -- expired,
+  // revoked, or the account is gone. Tear down the session so the route guard
+  // redirects, rather than leaving a signed-in shell over failing requests.
+  // Local-only: the token that triggered this is already invalid server-side,
+  // so calling logout again would be redundant.
   useEffect(() => {
-    setUnauthorizedHandler(signOut);
+    setUnauthorizedHandler(clearSession);
     return () => setUnauthorizedHandler(null);
-  }, [signOut]);
+  }, [clearSession]);
 
   // A token in localStorage is a claim, not proof: it may be expired or
   // belong to a deleted account. Verify it against /me before rendering the
