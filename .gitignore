@@ -1,5 +1,9 @@
 .claude/
 .env
+# Per-environment DSNs (.env.supabase and friends). .env.example is the one
+# file here meant to be public, so it is excluded from the pattern.
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 node_modules/
