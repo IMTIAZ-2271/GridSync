@@ -53,6 +53,7 @@ from .routes_meters import router as meters_router
 from .routes_notifications import router as notifications_router
 from .routes_ratings import router as ratings_router
 from .routes_sites import router as sites_router
+from .routes_supplier_registrations import router as supplier_registrations_router
 from .routes_views import router as views_router
 from .routes_work_orders import router as work_orders_router
 from .routes_workers import router as workers_router
@@ -119,6 +120,7 @@ app.include_router(views_router)
 app.include_router(ratings_router)
 app.include_router(work_orders_router)
 app.include_router(workers_router)
+app.include_router(supplier_registrations_router)
 app.include_router(agreements_router)
 app.include_router(analytics_router)
 app.include_router(applications_router)

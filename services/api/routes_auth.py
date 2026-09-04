@@ -2,8 +2,21 @@
 
 Each role registers differently because each role's identity hangs off a
 different key: a household has only itself, a worker has a region and possibly
-an employer, an official has a pre-issued code, a supplier has a company. See
-the header of db/sql/dao/auth_queries.sql.
+an employer, an official has a pre-issued code, a supplier has a company and a
+region. See the header of db/sql/dao/auth_queries.sql.
+
+**Two of the four are applications, not sign-ups.** A field worker and a
+supplier's staff account both land `pending` and are decided by a government
+official in the district they registered for. They can sign in immediately and
+see exactly one thing -- where their application stands -- because `/auth/me`
+is outside require_role and their portal is not.
+
+Nobody types a shared secret any more. A household and an official never did
+(an official presents a code issued to them personally, usable once); a worker
+never did; and the supplier's shared registration code has been removed rather
+than rotated. A string every installer in the city knows is not a check, and
+replacing it with a person who compares a name, a National ID and an
+organisation against their own records is the check it was pretending to be.
 
 Two things are true of all four. Every registration collects a National ID
 (consumer requirement 1, worker requirement 1), normalized to digits so
@@ -28,9 +41,9 @@ from .auth import (
     CurrentAccount,
     hash_password,
     issue_token,
-    registration_code,
     verify_password,
 )
+from .notify import notify
 from .orgs import (
     NATIONAL_ID_HELP,
     normalized_national_id,
@@ -65,6 +78,23 @@ class WorkerContext(BaseModel):
     distribution_company_name: str | None = None
 
 
+class SupplierContext(BaseModel):
+    """What a supplier's staff row says about them, resolved at sign-in.
+
+    The mirror of WorkerContext, and for the same reason: the portal asks the
+    database whether this registration has been approved rather than taking
+    the account's word for it. `service_district` is the region an official
+    decided in, not the whole list its firm covers.
+    """
+
+    supplier_id: UUID
+    supplier_name: str
+    job_title: str | None = None
+    service_district: str
+    approval_status: str
+    rejection_reason: str | None = None
+
+
 class AccountOut(BaseModel):
     account_id: UUID
     email: str
@@ -76,6 +106,7 @@ class AccountOut(BaseModel):
     national_id: str | None = None
     # Present only for the role it belongs to; null for everyone else.
     worker: WorkerContext | None = None
+    supplier: SupplierContext | None = None
     supplier_id: UUID | None = None
     supplier_name: str | None = None
     government_district: str | None = None
@@ -132,21 +163,35 @@ class WorkerRegisterIn(RegisterBase):
 class GovernmentRegisterIn(RegisterBase):
     """Government requirement 1: a unique, pre-issued ID.
 
-    Not the shared secret the other staff role still uses. The code names the
-    district its holder governs, so their scope is issued to them rather than
-    typed by them.
+    The code names the district its holder governs, so an official's scope is
+    issued to them rather than typed by them. It is also the only code left in
+    registration: the worker and supplier roles are decided by a person, and
+    this one is decided by a code because there is nobody above a regulator to
+    decide it.
     """
 
     official_code: str = Field(min_length=1, max_length=100)
 
 
 class SupplierRegisterIn(RegisterBase):
-    registration_code: str = Field(min_length=1, max_length=100)
+    """An application to act for an installer in one district.
+
+    No registration code: there is nothing here that only a real installer
+    could know, on purpose. Everything on this form is a *claim* -- who I am,
+    my National ID, the firm I work for, the region I work in -- and an
+    official in that region checks the claim before any of it means anything.
+    """
+
+    phone: str | None = Field(default=None, max_length=40)
     # Which installer this person works for. Companies are seeded; a supplier
     # account joins one rather than inventing one, so the firm a consumer
     # picks from a dropdown and rates is a single row however many staff
     # logins it has.
     supplier_code: str = Field(min_length=1, max_length=50)
+    # Which district's officials decide this, and the region this person acts
+    # for afterwards. Must be one the firm actually serves -- the same check
+    # a government worker's employing utility gets.
+    service_district: str = Field(min_length=1, max_length=100)
     job_title: str | None = Field(default=None, max_length=100)
 
 
@@ -183,20 +228,27 @@ async def _account_out(
     """The account row plus whatever its role hangs off.
 
     `account_profile` LEFT JOINs the supplier and government profiles, which
-    are one row each. The worker context is a second statement rather than a
-    third join: it is only ever wanted for one role, and folding it in would
-    put five always-null columns on every consumer's sign-in.
+    are one row each. The worker and supplier contexts are separate statements
+    rather than more joins: each is wanted for one role only, and folding both
+    in would put a dozen always-null columns on every household's sign-in.
+
+    Those two contexts are what the portal reads to decide between showing a
+    queue and showing "waiting for approval". A missing profile row leaves the
+    context absent rather than failing the sign-in -- it is possible only for a
+    seeded row mid-claim, and refusing to log someone in over it would turn a
+    cosmetic gap into a lockout.
     """
     row = await conn.fetchrow(sql("account_profile"), account_id)
     account = AccountOut(**dict(row))
 
     if account.role == "worker":
         state = await conn.fetchrow(sql("worker_registration_state"), account_id)
-        # A 'worker' account with no worker_profile is possible only for a
-        # seeded row mid-claim; treat the context as simply absent rather than
-        # failing the whole sign-in over it.
         if state is not None:
             account.worker = WorkerContext(**dict(state))
+    elif account.role == "supplier":
+        state = await conn.fetchrow(sql("supplier_registration_state"), account_id)
+        if state is not None:
+            account.supplier = SupplierContext(**dict(state))
 
     return account
 
@@ -309,6 +361,46 @@ async def _new_account(
         raise _duplicate(exc) from None
 
 
+async def _tell_the_officials(
+    conn: asyncpg.Connection,
+    district: str,
+    account_id: UUID,
+    *,
+    full_name: str,
+    what: str,
+    entity_type: str,
+) -> None:
+    """Announce a pending registration to whoever can decide it.
+
+    Without this the queue is a page somebody has to think to open. Both
+    approval queues carry an unread indicator, and the indicator is driven by
+    rows arriving -- but the bell is what brings an official to the portal in
+    the first place.
+
+    `officials_for_district` unions in admins, so a district nobody holds a
+    code for is not silently a dead letter box. It still *is* one when there is
+    no admin either, which CLAUDE.md records; this makes the reach as wide as
+    the data allows rather than pretending otherwise.
+
+    Inside the caller's transaction, and non-fatal by construction (notify
+    swallows its own errors): a registration that succeeded must not be rolled
+    back because the row announcing it could not be written.
+    """
+    for row in await conn.fetch(sql("officials_for_district"), district):
+        await notify(
+            conn,
+            row["account_id"],
+            "registration_pending",
+            f"{what} awaiting approval",
+            body=f"{full_name} has registered in {district}.",
+            entity_type=entity_type,
+            entity_id=str(account_id),
+            # Names the event, not the moment: a retried registration request
+            # must not produce a second row.
+            dedupe_key=f"{entity_type}:{account_id}:registered",
+        )
+
+
 @router.post(
     "/register/consumer",
     response_model=TokenOut,
@@ -346,15 +438,20 @@ async def register_worker(conn: Conn, payload: WorkerRegisterIn) -> TokenOut:
     """Register a field worker.
 
     Worker requirements 1 and 2. A worker declares which kind they are and
-    which region they cover:
+    which region they cover, and **either kind is an application**: the
+    profile lands `pending` and an official in that district decides it
+    (`PATCH /api/workers/{id}/approval`). Until then they can sign in and see
+    their own status, and nothing else -- require_role refuses the worker
+    portal and `offerable_worker` refuses to offer them a job.
 
-    * **private** — no company, and usable immediately. They handle private
-      jobs in their region and never receive government work orders.
+    * **private** — no company. They handle private jobs in their region and
+      never receive government work orders. This used to be approved by the
+      act of registering, which meant anyone who filled the form in could be
+      sent to a household's meter; the region's officials decide it now, on
+      the same evidence they get for anyone else -- name, National ID, region.
     * **government** — must name the distribution company that employs them,
-      and that company must actually serve the region they claim. The profile
-      is created `pending` and an official in that district approves it
-      (`PATCH /api/workers/{id}/approval`). Until then they can sign in and
-      see their own status, and nothing else.
+      and that company must actually serve the region they claim (422
+      otherwise, before anything is written).
 
     Passing `employee_code` instead claims a worker profile the seed already
     created. That is a demo affordance, not part of the requirement, and it
@@ -390,7 +487,6 @@ async def register_worker(conn: Conn, payload: WorkerRegisterIn) -> TokenOut:
                 detail=f"that distribution company does not serve {district}",
             )
         company_id = payload.distribution_company_id
-        approval = "pending"
     else:
         if payload.distribution_company_id is not None:
             raise HTTPException(
@@ -401,7 +497,6 @@ async def register_worker(conn: Conn, payload: WorkerRegisterIn) -> TokenOut:
                 ),
             )
         company_id = None
-        approval = "approved"
 
     async with conn.transaction():
         account_id = await _new_account(conn, payload, "worker", payload.phone)
@@ -413,13 +508,23 @@ async def register_worker(conn: Conn, payload: WorkerRegisterIn) -> TokenOut:
             await conn.execute(
                 sql("create_worker_profile"),
                 account_id, employee_code, district, payload.worker_kind,
-                company_id, approval,
+                # 'pending' for both kinds. The parameter stays rather than
+                # becoming a DEFAULT so the one place that decides it is the
+                # one place you read to find out.
+                company_id, "pending",
             )
         except asyncpg.UniqueViolationError:
             raise HTTPException(
                 status_code=409,
                 detail="that employee code is already in use; try again",
             ) from None
+
+        await _tell_the_officials(
+            conn, district, account_id,
+            full_name=payload.full_name.strip(),
+            what="Worker registration",
+            entity_type="worker_profile",
+        )
         return await _token_response_for(conn, account_id)
 
 
@@ -497,8 +602,10 @@ async def register_government(
     they type about themselves, and a leaked code burns one seat rather than
     handing out regulator access indefinitely.
 
-    This replaces the single shared secret for this role. Supplier
-    registration still uses one; see `register_supplier`.
+    This replaced the single shared secret for this role. Supplier
+    registration used one too until it was removed outright -- see
+    `register_supplier`, which is decided by an official rather than by a
+    string.
     """
     code_row = await conn.fetchrow(
         sql("government_code_for_claim"), payload.official_code
@@ -536,24 +643,29 @@ async def register_government(
     status_code=status.HTTP_201_CREATED,
 )
 async def register_supplier(conn: Conn, payload: SupplierRegisterIn) -> TokenOut:
-    """Register a solar installer's staff account against their company.
+    """Apply for an installer's staff account in one district.
 
-    Two things are checked: the shared registration code, and which company
-    this person works for. The company matters because it — not the account —
-    is what a consumer picks from a dropdown, applies to, and rates, so a firm
-    with three staff logins stays one supplier with one reputation.
+    Two things are recorded: which company this person works for, and which
+    region they work it in. The company matters because it -- not the account
+    -- is what a consumer picks from a dropdown, applies to, and rates, so a
+    firm with three staff logins stays one supplier with one reputation. The
+    region matters because it names the officials who decide the application,
+    and because a firm covering four districts must not have one district's
+    official deciding for the other three.
 
-    The shared code is still the weakest part of this: unlike government's
-    per-official codes it does not rotate and is not tied to an invitation, so
-    anyone holding it can attach themselves to any seeded company. Recorded as
-    a known weakness rather than quietly ignored.
+    **There is no registration code.** The shared string this endpoint used to
+    demand was the same for every installer, never rotated and tied to no
+    invitation, so anyone holding it could attach themselves to any firm on
+    the list -- and the list is public. Nothing on this form is now treated as
+    evidence: the account lands `pending`, and an official in the named
+    district compares the name, the National ID and the organisation against
+    records this form cannot reach before it becomes a supplier login.
+
+    The district must be one the firm actually serves (422 otherwise), which
+    is the same check a government worker's employing utility gets and exists
+    for the same reason: an application filed where the firm has no presence
+    lands in a queue whose official has no way to verify it.
     """
-    if payload.registration_code.strip() != registration_code("supplier"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="that registration code is not valid",
-        )
-
     company = await conn.fetchrow(
         sql("supplier_company_by_code"), payload.supplier_code
     )
@@ -563,10 +675,30 @@ async def register_supplier(conn: Conn, payload: SupplierRegisterIn) -> TokenOut
             detail=f"no active supplier with code '{payload.supplier_code}'",
         )
 
+    district, _lat, _lon = await resolve_district(conn, payload.service_district)
+
+    serves = await conn.fetchval(
+        sql("supplier_company_serves"), company["supplier_id"], district
+    )
+    if not serves:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{company['name']} does not work in {district}",
+        )
+
     async with conn.transaction():
-        account_id = await _new_account(conn, payload, "supplier")
+        account_id = await _new_account(
+            conn, payload, "supplier", payload.phone
+        )
         await conn.execute(
             sql("create_supplier_profile"),
             account_id, company["supplier_id"], payload.job_title,
+            district, "pending",
+        )
+        await _tell_the_officials(
+            conn, district, account_id,
+            full_name=payload.full_name.strip(),
+            what=f"Supplier registration ({company['name']})",
+            entity_type="supplier_profile",
         )
         return await _token_response_for(conn, account_id)

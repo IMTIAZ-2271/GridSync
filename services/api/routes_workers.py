@@ -1,10 +1,19 @@
 """Worker registrations: the government's approval queue.
 
-Government requirement 3. Registration has been able to create a `pending`
-government worker since migration e7c4b19a2d83 and nothing could decide one --
-which stopped being cosmetic when the jobs runner landed, because
-`offerable_worker` refuses to offer a job to a pending profile. A government
-worker who registered was unreachable by dispatch and had no way out of it.
+Government requirement 3. **Both kinds of worker land here now.** A private
+worker used to be approved by the act of registering -- anyone who filled the
+form in could be dispatched to a household's meter -- so the region's
+officials decide those too, on the same evidence they get for a government
+worker: a name, a National ID, a region, and for a government worker the
+utility that employs them.
+
+The queue blocks real work rather than paperwork. `offerable_worker` refuses
+to offer a job to a pending profile, and `require_role` refuses the worker
+portal outright, so an undecided registration cannot be dispatched to
+anything.
+
+Its twin is `routes_supplier_registrations.py`, which does the same for an
+installer's staff accounts. Both share `official_district_scope`.
 
 Two things are worth reading the SQL for rather than trusting this docstring:
 scope is the official's own district and is enforced in `db/sql/dao/
@@ -18,11 +27,10 @@ from datetime import date, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .auth import Principal, require_role
+from .auth import Principal, official_district_scope, require_role
 from .db import Conn
 from .notify import notify
 from .queries import sql
@@ -57,39 +65,23 @@ class WorkerDecision(BaseModel):
     reason: str | None = None
 
 
-async def _scope(conn: asyncpg.Connection, principal: Principal) -> str | None:
-    """The district this caller may act in, or None for every district.
-
-    None is admin, not "no access": an admin has no government_profile row, and
-    the SQL's `($1 IS NULL OR ...)` predicates read that as unscoped. A
-    government account always has one, created in the same transaction as the
-    account, so a None here for role 'government' would be a broken row.
-    """
-    if principal.role == "admin":
-        return None
-    district = await conn.fetchval(sql("official_district"), principal.account_id)
-    if district is None:
-        # Defensive: a government token whose profile has gone missing must not
-        # silently widen into an admin-shaped scope.
-        raise HTTPException(
-            status_code=403, detail="this account governs no district"
-        )
-    return district
-
-
 @router.get("/api/workers/pending", response_model=list[PendingWorker])
 async def pending_workers(
     conn: Conn,
     principal: Annotated[Principal, Depends(require_role("government", "admin"))],
 ) -> list[PendingWorker]:
-    """Registrations awaiting a decision, oldest first.
+    """Registrations awaiting a decision, newest first.
 
-    Government and admin only. A supplier is not on this list on purpose --
-    approving a *government* utility's field staff is the regulator's call, and
-    a private installer's own workers are approved at registration and never
-    reach this queue.
+    Government and admin only, and field workers only: an installer's staff
+    accounts are the same decision about a different subject and have their own
+    queue (`/api/supplier-registrations/pending`). Keeping them apart is what
+    lets each page show the evidence its decision actually turns on -- an
+    employing utility for one, an organisation and a licence number for the
+    other.
     """
-    rows = await conn.fetch(sql("pending_workers"), await _scope(conn, principal))
+    rows = await conn.fetch(
+        sql("pending_workers"), await official_district_scope(conn, principal)
+    )
     return [PendingWorker(**dict(r)) for r in rows]
 
 
@@ -109,7 +101,7 @@ async def decide_worker_approval(
     see that a decision was already made rather than quietly replacing whose
     name is on it.
     """
-    scope = await _scope(conn, principal)
+    scope = await official_district_scope(conn, principal)
 
     async with conn.transaction():
         before = await conn.fetchrow(sql("worker_approval_row"), account_id, scope)

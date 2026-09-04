@@ -77,6 +77,11 @@ export const PORTALS: Portal[] = [
       { path: "agreements", label: "Pending agreements", viewKey: VIEWS.governmentAgreements },
       { path: "net-metering", label: "Net metering" },
       { path: "workers", label: "Worker approvals", viewKey: VIEWS.governmentWorkers },
+      {
+        path: "supplier-registrations",
+        label: "Supplier approvals",
+        viewKey: VIEWS.governmentSupplierRegistrations,
+      },
       { path: "meter-applications", label: "Meter applications", viewKey: VIEWS.governmentMeterApplications },
     ],
   },

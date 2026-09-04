@@ -292,8 +292,70 @@ VALUES ($1, $2, $3);
 
 
 -- name: create_supplier_profile
-INSERT INTO supplier_profile (account_id, supplier_id, job_title)
-VALUES ($1, $2, $3);
+-- $4 is the district whose officials decide this registration, $5 the status
+-- it lands in. Neither is defaulted here, for the same reason
+-- create_worker_profile does not default its own: the choice belongs at the
+-- call site where it is visible, not in a DEFAULT nobody reads.
+--
+-- Every self-registration writes 'pending'. The shared registration code that
+-- used to stand in for a decision is gone -- an official checks the name,
+-- National ID and organisation against their own records and decides.
+INSERT INTO supplier_profile (
+    account_id, supplier_id, job_title, service_district,
+    approval_status, approved_at
+)
+VALUES ($1, $2, $3, $4, $5::approval_status,
+        CASE WHEN $5::approval_status = 'pending' THEN NULL ELSE now() END);
+
+
+-- name: supplier_company_serves
+-- Whether this installer actually works this district. The mirror of
+-- distribution_company_serves, and checked for the same reason: a supplier
+-- filed under a district their firm has no presence in would sit in a queue
+-- whose official has no way to verify them.
+SELECT EXISTS (
+    SELECT 1 FROM supplier_service_area
+    WHERE supplier_id = $1 AND district = $2
+);
+
+
+-- name: supplier_registration_state
+-- What sign-in needs to know about a supplier's staff account beyond the
+-- account row: which region they registered for, and whether an official has
+-- decided yet.
+--
+-- A second statement rather than more columns on account_profile, exactly as
+-- worker_registration_state is: it is wanted for one role only, and folding it
+-- in would put five permanently-null columns on every household's sign-in.
+SELECT sp.supplier_id,
+       sc.name                  AS supplier_name,
+       sp.job_title,
+       sp.service_district,
+       sp.approval_status::text AS approval_status,
+       sp.rejection_reason
+FROM supplier_profile sp
+JOIN supplier_company sc ON sc.supplier_id = sp.supplier_id
+WHERE sp.account_id = $1;
+
+
+-- name: list_supplier_companies_brief
+-- The installer dropdown on the registration form, and nothing more.
+--
+-- Deliberately not list_supplier_companies: that one carries ratings and
+-- contact details and stays behind a token (see the note above the handlers in
+-- services/api/orgs.py). This one is unauthenticated because the supplier tab
+-- has to be able to name a firm before an account exists, and it exposes only
+-- what a firm prints on its own van -- who they are and where they work. No
+-- rating, no address, no staff.
+SELECT sc.supplier_id,
+       sc.code,
+       sc.name,
+       array_remove(array_agg(DISTINCT a.district), NULL) AS districts
+FROM supplier_company sc
+LEFT JOIN supplier_service_area a ON a.supplier_id = sc.supplier_id
+WHERE sc.status = 'active'
+GROUP BY sc.supplier_id, sc.code, sc.name
+ORDER BY sc.name;
 
 
 -- name: create_worker_profile

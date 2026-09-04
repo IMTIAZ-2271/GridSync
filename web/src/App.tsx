@@ -19,6 +19,7 @@ import GovernmentByArea from "./routes/GovernmentByArea";
 import GovernmentAgreements from "./routes/GovernmentAgreements";
 import GovernmentNetMetering from "./routes/GovernmentNetMetering";
 import GovernmentWorkers from "./routes/GovernmentWorkers";
+import GovernmentSupplierRegistrations from "./routes/GovernmentSupplierRegistrations";
 import GovernmentMeterApplications from "./routes/GovernmentMeterApplications";
 import SupplierSites from "./routes/SupplierSites";
 import SupplierApplications from "./routes/SupplierApplications";
@@ -91,6 +92,10 @@ export default function App() {
             <Route path="agreements" element={<GovernmentAgreements />} />
             <Route path="net-metering" element={<GovernmentNetMetering />} />
             <Route path="workers" element={<GovernmentWorkers />} />
+            <Route
+              path="supplier-registrations"
+              element={<GovernmentSupplierRegistrations />}
+            />
             <Route
               path="meter-applications"
               element={<GovernmentMeterApplications />}

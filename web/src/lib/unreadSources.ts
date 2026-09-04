@@ -83,6 +83,11 @@ export const UNREAD_SOURCES: Partial<Record<ViewKey, UnreadSource>> = {
     queryFn: api.pendingWorkers,
     timestampOf: field("registered_at"),
   },
+  [VIEWS.governmentSupplierRegistrations]: {
+    queryKey: queryKeys.pendingSupplierRegistrations(),
+    queryFn: api.pendingSupplierRegistrations,
+    timestampOf: field("registered_at"),
+  },
 
   // --- supplier ----------------------------------------------------------
   [VIEWS.supplierApplications]: {

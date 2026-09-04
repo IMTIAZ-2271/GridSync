@@ -5,6 +5,7 @@ import {
   api,
   type DistributionCompany,
   type Role,
+  type SupplierCompanyBrief,
   type TokenResponse,
   type WorkerKind,
 } from "../lib/api";
@@ -21,12 +22,19 @@ import { AuthShell, FIELD, LABEL, SubmitButton } from "../components/AuthShell";
  *   collected here; a household links an existing connection after signing in,
  *   or builds a new one in the onboarding wizard.
  * - **Worker** — National ID, region, and whether they are a government or
- *   private worker. Choosing government reveals the distribution company
- *   picker and turns the submit into an application: an official in that
- *   region has to approve it.
+ *   private worker. Choosing government also asks which utility employs them.
+ *   Either way it is an application: an official in that region has to approve
+ *   it before any work reaches them.
  * - **Government** — the unique code issued to that official, which carries
- *   the district they govern.
- * - **Supplier** — the shared staff code plus the installer they work for.
+ *   the district they govern. The only code left on this page.
+ * - **Supplier** — the installer they work for and the region they work it in.
+ *   Also an application. There used to be a shared staff code here; it was one
+ *   string for every firm in the city, so it proved nothing, and it is gone.
+ *   The official checks the name, National ID and organisation instead.
+ *
+ * Two of the four therefore end on a waiting screen rather than in a portal
+ * (see auth/RequireAuth.tsx), which is why the submit button says what it is
+ * about to do.
  */
 type Tab = "consumer" | "worker" | "government" | "supplier";
 
@@ -41,21 +49,21 @@ const BLURB: Record<Tab, string> = {
   consumer:
     "Create your household account. You will add your billing meters once you are signed in — you can have more than one.",
   worker:
-    "Register as a field worker. Government workers are approved by an official in their region before they receive work orders.",
+    "Register as a field worker. An official in your region approves your registration before any work reaches you.",
   government:
     "Regulator access. Requires the unique official ID issued to you, which sets the district you oversee.",
   supplier:
-    "Solar installer access. Requires your organisation's registration code.",
+    "Solar installer staff. An official in your region checks your details against their records before your account is activated.",
 };
 
 /**
- * Reference data the worker tab needs, fetched when that tab opens.
+ * Reference data the two staff tabs need, fetched when one of them opens.
  *
- * Both endpoints are unauthenticated for exactly this reason -- see the note
- * above the handlers in services/api/orgs.py. They are not wrapped in
+ * All three endpoints are unauthenticated for exactly this reason -- see the
+ * note above the handlers in services/api/orgs.py. They are not wrapped in
  * TanStack Query because this page renders outside the authenticated shell
- * and neither list is worth a cache entry that only ever lives for as long as
- * a registration form is open.
+ * and none of the lists is worth a cache entry that only ever lives for as
+ * long as a registration form is open.
  */
 function useDistricts(enabled: boolean) {
   const [districts, setDistricts] = useState<string[]>([]);
@@ -78,6 +86,22 @@ function useDistributionCompanies(enabled: boolean) {
   return rows;
 }
 
+/**
+ * The installers, for the supplier tab.
+ *
+ * `/api/supplier-companies` is the narrow, unauthenticated list — name, code
+ * and coverage, no ratings or contact details. Picking a firm here is a claim,
+ * not a credential: an official verifies it.
+ */
+function useSupplierCompanies(enabled: boolean) {
+  const [rows, setRows] = useState<SupplierCompanyBrief[]>([]);
+  useEffect(() => {
+    if (!enabled || rows.length) return;
+    api.listSupplierCompanies().then(setRows).catch(() => setRows([]));
+  }, [enabled, rows.length]);
+  return rows;
+}
+
 export default function Register() {
   const { account, isLoading, adopt } = useAuth();
   const navigate = useNavigate();
@@ -94,17 +118,21 @@ export default function Register() {
   const [district, setDistrict] = useState("");
   const [companyId, setCompanyId] = useState("");
 
-  // Government / supplier
+  // Government
   const [code, setCode] = useState("");
+  // Supplier
   const [supplierCode, setSupplierCode] = useState("");
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const districts = useDistricts(tab === "worker");
+  // Both staff tabs pick a region: a worker's queue is scoped to it, and a
+  // supplier's application is decided by its official.
+  const districts = useDistricts(tab === "worker" || tab === "supplier");
   const companies = useDistributionCompanies(
     tab === "worker" && workerKind === "government",
   );
+  const installers = useSupplierCompanies(tab === "supplier");
 
   // Only the utilities that actually serve the chosen region. The server
   // refuses the mismatch with a 422 either way; narrowing the list here means
@@ -112,6 +140,16 @@ export default function Register() {
   const eligible = district
     ? companies.filter((c) => c.districts.includes(district))
     : companies;
+
+  // Same rule for installers, read the other way round: the firm is chosen
+  // first (it is the thing the applicant actually knows), so the region list
+  // narrows to where that firm works.
+  const installerDistricts = supplierCode
+    ? (installers.find((f) => f.code === supplierCode)?.districts ?? [])
+    : null;
+  const supplierRegions = installerDistricts
+    ? districts.filter((d) => installerDistricts.includes(d))
+    : districts;
 
   if (!isLoading && account) {
     return <Navigate to={HOME_FOR_ROLE[account.role]} replace />;
@@ -122,6 +160,9 @@ export default function Register() {
     setCode("");
     setSupplierCode("");
     setCompanyId("");
+    // The region means different things on the two tabs it appears on, and a
+    // value carried across would be a choice nobody made.
+    setDistrict("");
     setError(null);
   }
 
@@ -162,8 +203,9 @@ export default function Register() {
       } else {
         token = await api.registerSupplier({
           ...base,
-          registration_code: code.trim(),
+          phone: phone.trim() || null,
           supplier_code: supplierCode.trim(),
+          service_district: district,
         });
       }
       const me = adopt(token);
@@ -183,7 +225,7 @@ export default function Register() {
     (tab !== "worker" ||
       (district && (workerKind === "private" || companyId))) &&
     (tab !== "government" || code.trim()) &&
-    (tab !== "supplier" || (code.trim() && supplierCode.trim()));
+    (tab !== "supplier" || (supplierCode.trim() && district));
 
   return (
     <AuthShell
@@ -277,7 +319,7 @@ export default function Register() {
           </Field>
         </div>
 
-        {(tab === "consumer" || tab === "worker") && (
+        {tab !== "government" && (
           <Field id="reg-phone" label="Phone" optional>
             <input
               id="reg-phone"
@@ -368,14 +410,12 @@ export default function Register() {
               )}
             </div>
 
-            {workerKind === "government" && (
-              <p className="rounded-md bg-plane px-3 py-2 text-[14px] leading-relaxed text-ink-2">
-                Your registration is sent to the government officials for
-                {district ? ` ${district}` : " your region"}. You can sign in
-                straight away, but work orders only start arriving once it is
-                approved.
-              </p>
-            )}
+            <p className="rounded-md bg-plane px-3 py-2 text-[14px] leading-relaxed text-ink-2">
+              Your registration is sent to the government officials for
+              {district ? ` ${district}` : " your region"}. You can sign in
+              straight away and check where it stands; work orders start
+              arriving once it is approved.
+            </p>
           </>
         )}
 
@@ -396,35 +436,68 @@ export default function Register() {
         )}
 
         {tab === "supplier" && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field
-              id="reg-code"
-              label="Registration code"
-              hint="Given to you by your organisation."
-            >
-              <input
-                id="reg-code"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                className={`mt-1 font-mono ${FIELD}`}
-                required
-              />
-            </Field>
-            <Field
-              id="reg-supplier"
-              label="Your organisation"
-              hint="The installer you work for."
-            >
-              <input
+          <>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field
                 id="reg-supplier"
-                value={supplierCode}
-                onChange={(e) => setSupplierCode(e.target.value)}
-                placeholder="NOOR"
-                className={`mt-1 font-mono ${FIELD}`}
-                required
-              />
-            </Field>
-          </div>
+                label="Your organisation"
+                hint="The installer you work for."
+              >
+                <select
+                  id="reg-supplier"
+                  value={supplierCode}
+                  onChange={(e) => {
+                    setSupplierCode(e.target.value);
+                    // A region the new firm does not cover must not stay
+                    // selected -- the server would refuse it on submit.
+                    setDistrict("");
+                  }}
+                  className={`mt-1 ${FIELD}`}
+                  required
+                >
+                  <option value="">Select an installer…</option>
+                  {installers.map((f) => (
+                    <option key={f.supplier_id} value={f.code}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field
+                id="reg-supplier-district"
+                label="Region"
+                hint={
+                  supplierCode
+                    ? "Where you work for them. An official here approves you."
+                    : "Pick an installer first."
+                }
+              >
+                <select
+                  id="reg-supplier-district"
+                  value={district}
+                  onChange={(e) => setDistrict(e.target.value)}
+                  className={`mt-1 ${FIELD}`}
+                  disabled={!supplierCode}
+                  required
+                >
+                  <option value="">Select a region…</option>
+                  {supplierRegions.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+
+            <p className="rounded-md bg-plane px-3 py-2 text-[14px] leading-relaxed text-ink-2">
+              Your registration is sent to the government officials for
+              {district ? ` ${district}` : " that region"}, who check your
+              name, National ID and organisation against their records. You can
+              sign in straight away and see where it stands.
+            </p>
+          </>
         )}
 
         {error && (
@@ -434,7 +507,10 @@ export default function Register() {
         )}
 
         <SubmitButton busy={busy} busyLabel="Creating account…" disabled={!canSubmit}>
-          {tab === "worker" && workerKind === "government"
+          {/* Says what actually happens. Two of the four tabs end on a waiting
+              screen, and a button reading "Create account" would be promising
+              a portal that is not going to open yet. */}
+          {tab === "worker" || tab === "supplier"
             ? "Submit application"
             : "Create account"}
         </SubmitButton>

@@ -179,17 +179,31 @@ VALUES
   ('gov2@demo.com', 'government', 'Gov 2', '3000000002', 'Dhanmondi', 'GOV-DHANMONDI-01'),
   ('gov3@demo.com', 'government', 'Gov 3', '3000000003', 'Uttara',    'GOV-UTTARA-01');
 
--- Five installer staff across four firms. Supplier 1 (NOOR) gets two logins on
--- purpose:
--- staff attach to a company rather than being one (docs/decisions.md), and
--- that is only demonstrable if some firm has more than one person.
-INSERT INTO seed_staff (email, role, full_name, national_id, supplier_code)
+-- Five installer staff across four firms, each registered for ONE district.
+--
+-- Supplier 1 (NOOR) gets two logins on purpose, and they sit in different
+-- districts: staff attach to a company rather than being one
+-- (docs/decisions.md), and a supplier registration is approved by the official
+-- of the district the person works, not of everywhere the firm operates. Two
+-- logins on one firm decided by two different officials is that rule made
+-- visible.
+--
+-- The district must be one the firm actually serves; the DO block below
+-- refuses the seed if it is not, the same way it already refuses a government
+-- worker employed by a utility with no presence in their region.
+INSERT INTO seed_staff (email, role, full_name, national_id, supplier_code,
+                        district)
 VALUES
-  ('supplier1@demo.com', 'supplier', 'Supplier 1', '4000000001', 'NOOR'),
-  ('supplier2@demo.com', 'supplier', 'Supplier 2', '4000000002', 'SOLARIS'),
-  ('supplier3@demo.com', 'supplier', 'Supplier 3', '4000000003', 'RAHIMA'),
-  ('supplier4@demo.com', 'supplier', 'Supplier 4', '4000000004', 'PADMA'),
-  ('supplier5@demo.com', 'supplier', 'Supplier 5', '4000000005', 'NOOR');
+  ('supplier1@demo.com', 'supplier', 'Supplier 1', '4000000001', 'NOOR',
+   'Badda'),
+  ('supplier2@demo.com', 'supplier', 'Supplier 2', '4000000002', 'SOLARIS',
+   'Badda'),
+  ('supplier3@demo.com', 'supplier', 'Supplier 3', '4000000003', 'RAHIMA',
+   'Dhanmondi'),
+  ('supplier4@demo.com', 'supplier', 'Supplier 4', '4000000004', 'PADMA',
+   'Uttara'),
+  ('supplier5@demo.com', 'supplier', 'Supplier 5', '4000000005', 'NOOR',
+   'Dhanmondi');
 
 -- A government worker's employer must serve the district they work in, and an
 -- official's code must have been issued for the district they govern. Both are
@@ -216,6 +230,18 @@ BEGIN
     WHERE c.district <> s.district;
     IF bad IS NOT NULL THEN
         RAISE EXCEPTION 'official code issued for a different district: %', bad;
+    END IF;
+
+    SELECT string_agg(s.email, ', ') INTO bad
+    FROM seed_staff s
+    WHERE s.role = 'supplier'
+      AND NOT EXISTS (
+          SELECT 1 FROM supplier_company sc
+          JOIN supplier_service_area a ON a.supplier_id = sc.supplier_id
+          WHERE sc.code = s.supplier_code AND a.district = s.district
+      );
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'installer staff registered for a district their firm does not serve: %', bad;
     END IF;
 END $$;
 
@@ -297,16 +323,29 @@ SET district      = EXCLUDED.district,
     official_code = EXCLUDED.official_code;
 
 -- Installer staff, attached to the firm the roster names rather than to
--- whichever one sorts first.
-INSERT INTO supplier_profile (account_id, supplier_id, job_title)
+-- whichever one sorts first, and approved where they stand.
+--
+-- Seeded staff are pre-approved for the same reason seeded workers are: the
+-- demo needs four working portals on the first sign-in, and an approval queue
+-- is only worth demonstrating with an application somebody actually files.
+-- `approved_at` is required by supplier_approval_timestamps whenever the
+-- status is not 'pending', so it is set here rather than left to a default.
+INSERT INTO supplier_profile (account_id, supplier_id, job_title,
+                              service_district, approval_status, approved_at)
 SELECT a.account_id,
        (SELECT supplier_id FROM supplier_company WHERE code = s.supplier_code),
-       'Dispatcher'
+       'Dispatcher',
+       s.district,
+       'approved', now()
 FROM seed_staff s
 JOIN account a ON a.email = s.email
 WHERE s.role = 'supplier'
 ON CONFLICT (account_id) DO UPDATE
-SET supplier_id = EXCLUDED.supplier_id;
+SET supplier_id      = EXCLUDED.supplier_id,
+    service_district = EXCLUDED.service_district,
+    approval_status  = 'approved',
+    approved_at      = coalesce(supplier_profile.approved_at, now()),
+    rejection_reason = NULL;
 
 -- ---------------------------------------------------------------------------
 -- Attach the organisations to the demo estate.
@@ -410,12 +449,30 @@ WHERE EXISTS (SELECT 1 FROM claimed WHERE claimed.code = p.code);
 -- Attaches the lowest-coded firm, deterministically, so re-running picks the
 -- same one. Staff attach to a company rather than being one (docs/decisions.md),
 -- so this is a membership row, not a new organisation.
+--
+-- Pre-approved, like the roster's own staff above: these accounts existed and
+-- worked before registrations were decided by an official, and turning them
+-- pending would lock a demo login out of a portal it already had.
 -- ---------------------------------------------------------------------------
-INSERT INTO supplier_profile (account_id, supplier_id, job_title)
+INSERT INTO supplier_profile (account_id, supplier_id, job_title,
+                              service_district, approval_status, approved_at)
 SELECT a.account_id,
-       (SELECT supplier_id FROM supplier_company ORDER BY code LIMIT 1),
-       'Dispatcher'
+       pick.supplier_id,
+       'Dispatcher',
+       pick.district,
+       'approved', now()
 FROM account a
+CROSS JOIN LATERAL (
+    -- The lowest-coded firm, and the first district it serves that has an
+    -- official. A profile filed under a district nobody governs would be
+    -- correct and unreachable.
+    SELECT sc.supplier_id, ar.district
+    FROM supplier_company sc
+    JOIN supplier_service_area ar ON ar.supplier_id = sc.supplier_id
+    JOIN district d ON d.name = ar.district
+    ORDER BY sc.code, d.is_selectable DESC, ar.district
+    LIMIT 1
+) AS pick
 WHERE a.role = 'supplier'
   AND NOT EXISTS (
       SELECT 1 FROM supplier_profile sp WHERE sp.account_id = a.account_id

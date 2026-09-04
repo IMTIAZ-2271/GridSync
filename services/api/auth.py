@@ -104,11 +104,27 @@ class Principal:
     email: str
     full_name: str
     jti: UUID | None
+    #: 'pending' / 'approved' / 'rejected' for the two roles a government
+    #: official decides -- worker and supplier -- and None for everyone else.
+    #: None means "no decision applies to this role", NOT "undecided": a
+    #: household and a regulator are never in an approval queue, so folding
+    #: them into 'pending' would lock out most of the system.
+    approval_status: str | None = None
 
     @property
     def sees_every_site(self) -> bool:
         """Government and supplier are fleet-wide readers; the others are not."""
         return self.role in ("government", "supplier", "admin")
+
+    @property
+    def is_approved(self) -> bool:
+        """May this account act in its role yet?
+
+        A registration an official has not decided is not a permission. The
+        two roles that carry one -- worker and supplier -- reach a portal only
+        after somebody in their district says so; see require_role.
+        """
+        return self.approval_status in (None, "approved")
 
 
 _UNAUTHENTICATED = HTTPException(
@@ -123,6 +139,27 @@ _REVOKED = HTTPException(
     headers={"WWW-Authenticate": "Bearer"},
 )
 
+#: What an account whose registration has not been approved may still reach.
+#:
+#: A field worker and a supplier's staff account are both decided by a
+#: government official in the district they registered for (see
+#: routes_workers.py and routes_supplier_registrations.py). Until that
+#: decision they hold the role without holding the job, and the API answers
+#: 403 everywhere except here:
+#:
+#:   * /api/auth/* -- `/me` is how the portal learns it is waiting and what
+#:     for, and `/logout` must work for anyone who can log in. Registration
+#:     and login are unauthenticated and never reach this check at all.
+#:   * /api/notifications* -- the inbox the decision arrives in. Every
+#:     statement behind it is already scoped to the token's own account, so a
+#:     pending account reads its own mail and nothing else.
+#:
+#: A prefix list rather than a check inside require_role, because require_role
+#: is not on every endpoint: several routes take a bare CurrentAccount and do
+#: their scoping in SQL, and a gate with exceptions it does not know about is
+#: not a gate. This is the one place every authenticated request passes.
+_PENDING_MAY_REACH = ("/api/auth/", "/api/notifications")
+
 
 async def get_current_account(request: Request) -> Principal:
     """Resolve the bearer token to a live account.
@@ -130,6 +167,14 @@ async def get_current_account(request: Request) -> Principal:
     The account is re-read on every request rather than trusted from the token
     body. The token proves who authenticated; whether that account still exists
     and is still active is a fact about now, not about when it was issued.
+
+    **An undecided registration is refused here, for the whole API at once.**
+    A worker and a supplier's staff account are approved by a government
+    official before either becomes a working login, and this is the only place
+    every authenticated request passes -- routes that take a bare
+    `CurrentAccount` and scope themselves in SQL would slip past a check that
+    lived in require_role. `_PENDING_MAY_REACH` is the short list of what such
+    an account can still open, and it is short on purpose.
 
     Revocation is folded into this same round trip: `revoked_token` is left
     joined on the token's own `jti`, so a logged-out token is rejected here
@@ -159,6 +204,12 @@ async def get_current_account(request: Request) -> Principal:
     jti = UUID(raw_jti) if raw_jti else None
 
     pool: asyncpg.Pool = request.app.state.pool
+    # The two profile joins are one-row-or-none and mutually exclusive -- an
+    # account has one role -- so COALESCE picks whichever applies and leaves
+    # NULL for the roles nobody approves. Read here rather than in each router
+    # because this lookup already runs on every request: asking separately
+    # whether a registration has been decided would be a second round trip for
+    # a fact that is already on its way.
     row = await pool.fetchrow(
         """
         SELECT account.account_id,
@@ -166,9 +217,16 @@ async def get_current_account(request: Request) -> Principal:
                account.full_name,
                account.role::text AS role,
                account.status::text AS status,
+               COALESCE(worker_profile.approval_status,
+                        supplier_profile.approval_status)::text
+                   AS approval_status,
                (revoked_token.jti IS NOT NULL) AS token_revoked
         FROM account
         LEFT JOIN revoked_token ON revoked_token.jti = $2::uuid
+        LEFT JOIN worker_profile
+               ON worker_profile.account_id = account.account_id
+        LEFT JOIN supplier_profile
+               ON supplier_profile.account_id = account.account_id
         WHERE account.account_id = $1
         """,
         UUID(payload["sub"]),
@@ -184,13 +242,32 @@ async def get_current_account(request: Request) -> Principal:
             detail=f"account is {row['status']}",
         )
 
-    return Principal(
+    principal = Principal(
         account_id=row["account_id"],
         role=row["role"],  # type: ignore[arg-type]
         email=row["email"],
         full_name=row["full_name"],
         jti=jti,
+        approval_status=row["approval_status"],
     )
+
+    if not principal.is_approved and not request.url.path.startswith(
+        _PENDING_MAY_REACH
+    ):
+        # Says which state, because the two mean different things to do next:
+        # a rejected applicant is not waiting for anything, and telling them
+        # to wait would be the wrong instruction.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "your registration is still awaiting approval by a "
+                "government official in your region"
+                if principal.approval_status == "pending"
+                else "your registration was not approved"
+            ),
+        )
+
+    return principal
 
 
 CurrentAccount = Annotated[Principal, Depends(get_current_account)]
@@ -203,6 +280,10 @@ def require_role(*roles: Role):
     does not exist would only make a legitimate permissions bug harder to
     diagnose. Which *rows* they may see is a separate question, handled by the
     scoped queries rather than here.
+
+    Whether the caller's registration has been *approved* is a third question
+    and is not asked here -- get_current_account answers it for every
+    authenticated request, including the several that never call this factory.
     """
 
     async def _guard(principal: CurrentAccount) -> Principal:
@@ -216,21 +297,6 @@ def require_role(*roles: Role):
     return _guard
 
 
-def registration_code(role: Literal["government", "supplier"]) -> str:
-    """The shared code a government or supplier registrant must present.
-
-    In .env rather than in source: a code committed to the repository is not a
-    check, and these two roles read every site in the system. Still a shared
-    secret with no rotation and no per-invite tracking, which is the next thing
-    to fix if this stops being a demo.
-    """
-    key = "GOV_REGISTRATION_CODE" if role == "government" else "SUPPLIER_REGISTRATION_CODE"
-    code = os.environ.get(key, "").strip()
-    if not code:
-        raise RuntimeError(f"{key} is not set. Add it to .env (see .env.example).")
-    return code
-
-
 # --------------------------------------------------------------------------
 # Row-level authorization
 #
@@ -239,6 +305,34 @@ def registration_code(role: Literal["government", "supplier"]) -> str:
 # needed -- a consumer may legitimately call /summary, but only for a site
 # they own.
 # --------------------------------------------------------------------------
+
+async def official_district_scope(
+    conn: asyncpg.Connection, principal: Principal
+) -> str | None:
+    """The district this caller may decide things in, or None for all of them.
+
+    None is admin, not "no access": an admin has no `government_profile` row,
+    and the scoped statements read a NULL as "every district" through their
+    `($1 IS NULL OR ...)` predicates. A government account always has one --
+    registration creates the profile in the same transaction as the account --
+    so a NULL here for role 'government' is a broken row, and widening it into
+    an admin-shaped scope would hand every district to an account that was
+    issued none.
+
+    Shared by both approval queues (workers and supplier staff) because both
+    ask exactly this question, and a second copy of it would be the thing that
+    drifts.
+    """
+    if principal.role == "admin":
+        return None
+    district = await conn.fetchval(sql("official_district"), principal.account_id)
+    if district is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this account governs no district",
+        )
+    return district
+
 
 async def visible_site_or_404(
     conn: asyncpg.Connection,

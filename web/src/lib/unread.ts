@@ -42,6 +42,7 @@ export const VIEWS = {
   governmentAgreements: "government:agreements",
   governmentMeterApplications: "government:meter-applications",
   governmentWorkers: "government:workers",
+  governmentSupplierRegistrations: "government:supplier-registrations",
   supplierApplications: "supplier:applications",
   supplierIssues: "supplier:issues",
   supplierDispatch: "supplier:dispatch",

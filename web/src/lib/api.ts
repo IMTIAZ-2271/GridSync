@@ -156,10 +156,11 @@ export interface ConsumptionLimitBody {
 /**
  * A worker registration awaiting a government official's decision.
  *
- * Only government workers reach this queue -- a private installer's staff are
- * approved at registration. Until one is approved they cannot be offered a work
- * order at all (`offerable_worker` refuses a pending profile), so this is a
- * blocking queue, not a formality.
+ * Both kinds reach this queue: a private worker used to be approved by the act
+ * of registering, and is now decided by an official in their region like
+ * everyone else. Until one is approved they cannot open the worker portal at
+ * all, and cannot be offered a work order (`offerable_worker` refuses a
+ * pending profile) -- a blocking queue, not a formality.
  */
 export interface PendingWorker {
   account_id: string;
@@ -184,6 +185,35 @@ export interface WorkerDecisionBody {
   decision: "approve" | "reject";
   reason?: string | null;
 }
+
+/**
+ * An installer's staff account awaiting the same decision.
+ *
+ * Everything an official needs is on the row, because the decision is a
+ * comparison against records held outside this system: the person's name and
+ * National ID, the organisation they claim, and that firm's licence number.
+ * There is nothing to open.
+ */
+export interface PendingSupplier {
+  account_id: string;
+  full_name: string;
+  email: string;
+  national_id: string | null;
+  phone: string | null;
+  job_title: string | null;
+  supplier_id: string;
+  supplier_code: string;
+  supplier_name: string;
+  license_no: string | null;
+  /** The one district this person registered for, not everywhere the firm works. */
+  service_district: string;
+  approval_status: ApprovalStatus;
+  rejection_reason: string | null;
+  approved_at: Timestamp | null;
+  registered_at: Timestamp;
+}
+
+export type SupplierDecisionBody = WorkerDecisionBody;
 
 /**
  * The statuses a triager can set. Narrower than `IssueStatus` on purpose:
@@ -725,9 +755,9 @@ export type ApprovalStatus = "pending" | "approved" | "rejected";
  * What a worker's own row says about them, resolved server-side at sign-in.
  *
  * The portal must not ask a worker which kind they are, and must not believe
- * them if it did -- this comes from `worker_profile`. `approval_status` is
- * what gates a government worker's queue until an official in their district
- * approves the registration.
+ * them if it did -- this comes from `worker_profile`. `approval_status` gates
+ * the whole worker portal, for both kinds, until an official in their district
+ * decides the registration.
  */
 export interface WorkerContext {
   worker_kind: WorkerKind;
@@ -737,6 +767,21 @@ export interface WorkerContext {
   distribution_company_id: string | null;
   distribution_company_code: string | null;
   distribution_company_name: string | null;
+}
+
+/**
+ * The same, for an installer's staff account.
+ *
+ * `service_district` is the one region an official decided in -- not the whole
+ * list the firm covers.
+ */
+export interface SupplierContext {
+  supplier_id: string;
+  supplier_name: string;
+  job_title: string | null;
+  service_district: string;
+  approval_status: ApprovalStatus;
+  rejection_reason: string | null;
 }
 
 export interface Account {
@@ -750,6 +795,8 @@ export interface Account {
   national_id: string | null;
   /** Set for role 'worker' only. */
   worker: WorkerContext | null;
+  /** Set for role 'supplier' only -- the registration and its verdict. */
+  supplier: SupplierContext | null;
   /** Set for role 'supplier' only. */
   supplier_id: string | null;
   supplier_name: string | null;
@@ -786,6 +833,11 @@ export interface ConsumerRegisterBody extends RegisterBase {
   phone?: string | null;
 }
 
+/**
+ * An application, not a sign-up: either kind lands `pending` and an official in
+ * `service_district` decides it. They can sign in immediately and see only
+ * where the application stands.
+ */
 export interface WorkerRegisterBody extends RegisterBase {
   phone?: string | null;
   worker_kind: WorkerKind;
@@ -805,10 +857,17 @@ export interface GovernmentRegisterBody extends RegisterBase {
   official_code: string;
 }
 
+/**
+ * Also an application. There is deliberately no registration code: nothing on
+ * this form is evidence, and an official in `service_district` checks the
+ * name, National ID and organisation against records the form cannot reach.
+ */
 export interface SupplierRegisterBody extends RegisterBase {
-  registration_code: string;
+  phone?: string | null;
   /** Which installer this person works for, e.g. NOOR. */
   supplier_code: string;
+  /** Must be one of that firm's districts; the server answers 422 otherwise. */
+  service_district: string;
   job_title?: string | null;
 }
 
@@ -828,6 +887,19 @@ export interface DistributionCompany {
   name: string;
   contact_email: string | null;
   contact_phone: string | null;
+  districts: string[];
+}
+
+/**
+ * An installer as the registration form names one: no rating, no contact
+ * details. `/api/supplier-companies` is unauthenticated for that reason --
+ * the supplier tab has to name a firm before an account exists. Naming one
+ * proves nothing; an official checks the claim.
+ */
+export interface SupplierCompanyBrief {
+  supplier_id: string;
+  code: string;
+  name: string;
   districts: string[];
 }
 
@@ -1339,6 +1411,9 @@ export const api = {
       `/distribution-companies${district ? `?district=${encodeURIComponent(district)}` : ""}`,
     ),
 
+  listSupplierCompanies: () =>
+    request<SupplierCompanyBrief[]>("/supplier-companies"),
+
   listSuppliers: (district?: string) =>
     request<SupplierCompany[]>(
       `/suppliers${district ? `?district=${encodeURIComponent(district)}` : ""}`,
@@ -1500,6 +1575,18 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+
+  pendingSupplierRegistrations: () =>
+    request<PendingSupplier[]>("/supplier-registrations/pending"),
+
+  decideSupplierRegistration: (
+    accountId: string,
+    body: SupplierDecisionBody,
+  ) =>
+    request<PendingSupplier>(
+      `/supplier-registrations/${accountId}/approval`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
 
   updateIssueStatus: (issueId: string, body: IssueStatusBody) =>
     request<Issue>(`/issues/${issueId}/status`, {
@@ -1671,6 +1758,8 @@ export const queryKeys = {
   swappableMeters: (siteId: string) => ["sites", siteId, "swappable-meters"] as const,
   viewStates: () => ["views"] as const,
   pendingWorkers: () => ["workers", "pending"] as const,
+  pendingSupplierRegistrations: () =>
+    ["supplier-registrations", "pending"] as const,
   analyticsByArea: (district?: string) =>
     ["analytics", "by-area", district ?? "all"] as const,
 };

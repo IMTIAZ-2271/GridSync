@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, api, queryKeys, type PendingWorker } from "../lib/api";
+import { ApiError, api, queryKeys, type PendingSupplier } from "../lib/api";
 import {
   VIEWS,
   isUnread,
@@ -18,47 +18,41 @@ import {
 } from "../components/ui";
 
 /**
- * Government requirement 3: the worker approval queue.
+ * Approving an installer's staff account.
  *
- * **Both kinds of worker land here.** A private worker used to be approved by
- * the act of registering -- anyone who filled the form in could be sent to a
- * household's meter -- so they are decided here too, on the same evidence: a
- * name, a National ID, a region, and for a government worker the utility that
- * employs them. The row says which kind it is, because a private worker has no
- * employer to name and a blank where a company would be reads as missing data.
+ * This queue replaced a shared registration code — one string, the same for
+ * every firm in the city, never rotated. Anyone who had it could attach
+ * themselves to any installer on the public list. Nothing on the registration
+ * form is treated as evidence any more: the applicant claims a name, a
+ * National ID and an organisation, and an official checks all three against
+ * records the form cannot reach.
  *
- * The queue blocks real work rather than paperwork. An undecided registration
- * cannot open the worker portal at all, and `assignable_workers` will not offer
- * it a job.
+ * Which is why the row shows those three and the firm's licence number, and
+ * why there is nothing to open. The decision is a comparison against something
+ * outside this system; a detail page would only be a bigger version of the
+ * same four facts.
  *
- * Its twin is /government/supplier-registrations, which decides an installer's
- * staff accounts. Same scope rule, same guards, different evidence.
- *
- * Scope is the official's own district and comes from the server, not from a
- * filter here: the API reads it off `government_profile` and a worker outside it
- * answers 404. There is deliberately no district selector on this page -- an
- * official governs one district, and offering a picker would imply otherwise.
- *
- * Newest-first, which the query does -- the burying problem a recency sort
- * creates is answered by the unread indicator rather than by the order.
+ * Scope is the official's own district, from the server — and it is the
+ * district the *applicant registered for*, not everywhere their firm works. A
+ * firm covering four districts is four decisions by four officials, so
+ * approving someone here never vouches for a colleague next door.
  *
  * Rejection asks for a reason on the row; approval does not ask for anything.
- * The asymmetry is the same one on the agreements queue: approval is the
- * expected outcome, and a rejection somebody cannot act on is worse than no
- * answer -- "rejected" alone does not tell an applicant what to fix.
+ * Same asymmetry as the worker and agreement queues: approval is the expected
+ * outcome, and "rejected" with no reason is not something an applicant can act
+ * on.
  */
-export default function GovernmentWorkers() {
-  // Marks this list seen on open and hands back the watermark it
-  // replaced, so rows that arrived since the last visit are lit for
-  // exactly this render and normal on the next load.
-  const watermark = useMarkViewSeen(VIEWS.governmentWorkers);
+export default function GovernmentSupplierRegistrations() {
+  // Marks this list seen on open and hands back the watermark it replaced, so
+  // rows that arrived since the last visit are lit for exactly this render.
+  const watermark = useMarkViewSeen(VIEWS.governmentSupplierRegistrations);
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState("");
 
   const pending = useQuery({
-    queryKey: queryKeys.pendingWorkers(),
-    queryFn: () => api.pendingWorkers(),
+    queryKey: queryKeys.pendingSupplierRegistrations(),
+    queryFn: () => api.pendingSupplierRegistrations(),
   });
 
   const decide = useMutation({
@@ -70,30 +64,34 @@ export default function GovernmentWorkers() {
       accountId: string;
       decision: "approve" | "reject";
       why?: string;
-    }) => api.decideWorker(accountId, { decision, reason: why ?? null }),
+    }) =>
+      api.decideSupplierRegistration(accountId, {
+        decision,
+        reason: why ?? null,
+      }),
     // Invalidate rather than splice the row out: the server maintains
-    // approved_at and rejection_reason, and a decision someone else made in the
-    // meantime should surface here rather than be papered over.
+    // approved_at and rejection_reason, and a decision someone else made in
+    // the meantime should surface here rather than be papered over.
     onSettled: async () => {
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.pendingWorkers(),
+        queryKey: queryKeys.pendingSupplierRegistrations(),
       });
       setRejecting(null);
       setReason("");
     },
   });
 
-  // A 409 means another official decided it first. That is worth saying
-  // plainly -- the refetch above will already have removed the row, so a
-  // generic failure message would leave someone wondering what they broke.
+  // A 409 means another official decided it first. Worth saying plainly — the
+  // refetch above will already have removed the row, so a generic failure
+  // message would leave someone wondering what they broke.
   const conflict =
     decide.error instanceof ApiError && decide.error.status === 409;
 
   return (
     <Card>
       <CardHeader
-        title="Worker approvals"
-        subtitle="Field workers awaiting a decision in your district"
+        title="Supplier approvals"
+        subtitle="Installer staff awaiting a decision in your district"
         action={
           pending.data ? (
             <Badge tone={pending.data.length > 0 ? "warning" : "good"}>
@@ -125,33 +123,33 @@ export default function GovernmentWorkers() {
       ) : pending.data.length === 0 ? (
         <EmptyState
           title="Nothing waiting"
-          hint="Anyone registering as a field worker in your district appears here until you approve or reject them. Until you do, they cannot be offered any work."
+          hint="Anyone registering to work for a solar installer in your district appears here. Check their name, National ID and organisation against your records before approving — until you do, they cannot open the supplier portal."
         />
       ) : (
         <ul className="divide-y divide-hairline">
-          {pending.data.map((worker) => (
-            <WorkerRow
-              unread={isUnread(worker.registered_at, watermark)}
-              key={worker.account_id}
-              worker={worker}
-              rejecting={rejecting === worker.account_id}
+          {pending.data.map((row) => (
+            <SupplierRow
+              key={row.account_id}
+              unread={isUnread(row.registered_at, watermark)}
+              row={row}
+              rejecting={rejecting === row.account_id}
               reason={reason}
               onReason={setReason}
               busy={decide.isPending}
               onApprove={() =>
                 decide.mutate({
-                  accountId: worker.account_id,
+                  accountId: row.account_id,
                   decision: "approve",
                 })
               }
               onStartReject={() => {
-                setRejecting(worker.account_id);
+                setRejecting(row.account_id);
                 setReason("");
               }}
               onCancelReject={() => setRejecting(null)}
               onConfirmReject={() =>
                 decide.mutate({
-                  accountId: worker.account_id,
+                  accountId: row.account_id,
                   decision: "reject",
                   why: reason.trim() || undefined,
                 })
@@ -164,9 +162,9 @@ export default function GovernmentWorkers() {
   );
 }
 
-function WorkerRow({
+function SupplierRow({
   unread,
-  worker,
+  row,
   rejecting,
   reason,
   onReason,
@@ -178,7 +176,7 @@ function WorkerRow({
 }: {
   /** Arrived since this account last opened the list. */
   unread: boolean;
-  worker: PendingWorker;
+  row: PendingSupplier;
   rejecting: boolean;
   reason: string;
   onReason: (v: string) => void;
@@ -189,30 +187,35 @@ function WorkerRow({
   onConfirmReject: () => void;
 }) {
   const waiting = Math.floor(
-    (Date.now() - new Date(worker.registered_at).getTime()) / 86_400_000,
+    (Date.now() - new Date(row.registered_at).getTime()) / 86_400_000,
   );
 
   return (
     <li className={`px-5 py-4 ${unreadRowClass(unread)}`}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="font-medium text-ink">{worker.full_name}</p>
+          <p className="font-medium text-ink">{row.full_name}</p>
           <p className="mt-0.5 text-sm text-ink-muted">
-            {worker.email} · <span className="tabular">{worker.employee_code}</span>
+            {row.email}
+            {row.phone ? ` · ${row.phone}` : ""}
           </p>
-          {/* The decision is a check against records outside this system, and
-              the National ID is what that check is made on. */}
-          <p className="mt-1 text-sm text-ink-2">
-            National ID{" "}
-            <span className="tabular">{worker.national_id ?? "—"}</span>
-          </p>
-          <p className="mt-1 text-xs text-ink-muted">
-            {worker.worker_kind === "government"
-              ? (worker.distribution_company_name ??
-                "Government worker, no utility recorded")
-              : "Private worker"}{" "}
-            · {worker.service_district} · registered{" "}
-            {waiting === 0 ? "today" : `${waiting} day${waiting === 1 ? "" : "s"} ago`}
+          {/* The three things the decision actually turns on, given their own
+              line rather than being folded into the meta row below. */}
+          <dl className="mt-2 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+            <Fact label="National ID" value={row.national_id ?? "—"} mono />
+            <Fact label="Organisation" value={row.supplier_name} />
+            <Fact
+              label="Licence"
+              value={row.license_no ?? "None on file"}
+              mono={Boolean(row.license_no)}
+            />
+            <Fact label="Role" value={row.job_title ?? "Not stated"} />
+          </dl>
+          <p className="mt-2 text-xs text-ink-muted">
+            {row.service_district} · registered{" "}
+            {waiting === 0
+              ? "today"
+              : `${waiting} day${waiting === 1 ? "" : "s"} ago`}
           </p>
         </div>
 
@@ -249,7 +252,7 @@ function WorkerRow({
               autoFocus
               value={reason}
               onChange={(e) => onReason(e.target.value)}
-              placeholder="Employee code does not match our records"
+              placeholder="Not listed as staff by this installer"
               className="mt-1 w-full rounded-lg border border-hairline bg-surface px-3 py-2 text-ink"
             />
           </label>
@@ -276,5 +279,24 @@ function WorkerRow({
         </div>
       )}
     </li>
+  );
+}
+
+function Fact({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex gap-2">
+      <dt className="shrink-0 text-ink-muted">{label}</dt>
+      <dd className={`min-w-0 truncate text-ink-2 ${mono ? "tabular" : ""}`}>
+        {value}
+      </dd>
+    </div>
   );
 }

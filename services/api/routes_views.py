@@ -49,6 +49,7 @@ VIEW_KEYS: frozenset[str] = frozenset({
     "government:agreements",
     "government:meter-applications",
     "government:workers",
+    "government:supplier-registrations",
     # Supplier
     "supplier:applications",
     "supplier:issues",

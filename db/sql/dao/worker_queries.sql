@@ -1,12 +1,16 @@
 -- Worker DAO: the approval queue an official works, and the decision itself.
 --
--- Government requirement 3. `worker_profile.approval_status` has been written
--- at registration since migration e7c4b19a2d83 -- a private worker lands
--- 'approved', a government worker lands 'pending' -- and until now nothing
--- could move it. That mattered more after the jobs runner landed:
--- `offerable_worker` (assignment_queries.sql) refuses to offer a job to a
--- pending profile, so a government worker who registered could never be
--- dispatched to anything.
+-- Government requirement 3. Every self-registration lands 'pending' now --
+-- private as well as government. A private worker used to be approved by the
+-- act of registering, which meant anyone who filled the form in could be
+-- dispatched to a household's meter; the district's officials decide both
+-- kinds, and `worker_kind` on the row below is what tells them which sort of
+-- application they are reading.
+--
+-- The queue blocks real work rather than paperwork: `offerable_worker`
+-- (assignment_queries.sql) refuses to offer a job to a pending profile, and
+-- require_role refuses the worker portal outright, so an undecided
+-- registration cannot be dispatched to anything.
 --
 -- Scope is the official's own district, enforced in SQL rather than by a filter
 -- in the handler. An official governs one district (government_profile.district
@@ -40,6 +44,11 @@ WHERE gp.account_id = $1;
 -- $1 NULL means every district (admin). Listing every pending worker to a
 -- district official would show them names they cannot act on, which reads as a
 -- broken button rather than as a scope.
+--
+-- Both kinds appear. `distribution_company_name` is NULL for a private worker
+-- -- they have no employer to name (worker_kind_employer makes that a
+-- constraint, not a convention) -- so the page says which kind it is rather
+-- than leaving a blank line where a company would be.
 SELECT wp.account_id,
        a.full_name,
        a.email,
