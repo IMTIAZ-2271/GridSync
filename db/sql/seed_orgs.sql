@@ -330,22 +330,32 @@ SET district      = EXCLUDED.district,
 -- is only worth demonstrating with an application somebody actually files.
 -- `approved_at` is required by supplier_approval_timestamps whenever the
 -- status is not 'pending', so it is set here rather than left to a default.
-INSERT INTO supplier_profile (account_id, supplier_id, job_title,
-                              service_district, approval_status, approved_at)
+INSERT INTO supplier_profile (account_id, supplier_id, claimed_organisation,
+                              job_title, service_district,
+                              approval_status, approved_at)
 SELECT a.account_id,
-       (SELECT supplier_id FROM supplier_company WHERE code = s.supplier_code),
+       pick.supplier_id,
+       -- What they "claimed" is the firm they are attached to: these accounts
+       -- were created by a roster, not by somebody typing into a form, and
+       -- inventing a misspelling to make the column look used would be a lie
+       -- in the one field that exists to be audited.
+       pick.name,
        'Dispatcher',
        s.district,
        'approved', now()
 FROM seed_staff s
 JOIN account a ON a.email = s.email
+CROSS JOIN LATERAL (
+    SELECT supplier_id, name FROM supplier_company WHERE code = s.supplier_code
+) AS pick
 WHERE s.role = 'supplier'
 ON CONFLICT (account_id) DO UPDATE
-SET supplier_id      = EXCLUDED.supplier_id,
-    service_district = EXCLUDED.service_district,
-    approval_status  = 'approved',
-    approved_at      = coalesce(supplier_profile.approved_at, now()),
-    rejection_reason = NULL;
+SET supplier_id          = EXCLUDED.supplier_id,
+    claimed_organisation = EXCLUDED.claimed_organisation,
+    service_district     = EXCLUDED.service_district,
+    approval_status      = 'approved',
+    approved_at          = coalesce(supplier_profile.approved_at, now()),
+    rejection_reason     = NULL;
 
 -- ---------------------------------------------------------------------------
 -- Attach the organisations to the demo estate.
@@ -454,10 +464,12 @@ WHERE EXISTS (SELECT 1 FROM claimed WHERE claimed.code = p.code);
 -- worked before registrations were decided by an official, and turning them
 -- pending would lock a demo login out of a portal it already had.
 -- ---------------------------------------------------------------------------
-INSERT INTO supplier_profile (account_id, supplier_id, job_title,
-                              service_district, approval_status, approved_at)
+INSERT INTO supplier_profile (account_id, supplier_id, claimed_organisation,
+                              job_title, service_district,
+                              approval_status, approved_at)
 SELECT a.account_id,
        pick.supplier_id,
+       pick.name,
        'Dispatcher',
        pick.district,
        'approved', now()
@@ -466,7 +478,7 @@ CROSS JOIN LATERAL (
     -- The lowest-coded firm, and the first district it serves that has an
     -- official. A profile filed under a district nobody governs would be
     -- correct and unreachable.
-    SELECT sc.supplier_id, ar.district
+    SELECT sc.supplier_id, sc.name, ar.district
     FROM supplier_company sc
     JOIN supplier_service_area ar ON ar.supplier_id = sc.supplier_id
     JOIN district d ON d.name = ar.district

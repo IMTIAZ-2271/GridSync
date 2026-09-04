@@ -35,10 +35,13 @@ export default function PendingApproval() {
   const reason = context?.rejection_reason;
   const rejected = status === "rejected";
 
+  // The claim, not the firm: nothing has been resolved yet, and printing a
+  // firm name here would tell someone they belong to an organisation an
+  // official has not linked them to.
   const subject =
     account.role === "supplier"
       ? account.supplier
-        ? `${account.supplier.supplier_name} — ${account.supplier.job_title ?? "staff"}`
+        ? `${account.supplier.supplier_name ?? account.supplier.claimed_organisation} — ${account.supplier.job_title ?? "staff"}`
         : "Installer staff account"
       : account.worker?.worker_kind === "government"
         ? `Government worker${

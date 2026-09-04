@@ -85,10 +85,17 @@ class SupplierContext(BaseModel):
     database whether this registration has been approved rather than taking
     the account's word for it. `service_district` is the region an official
     decided in, not the whole list its firm covers.
+
+    Two organisation fields, not one, and they answer different questions.
+    `claimed_organisation` is what this person typed and is always present;
+    `supplier_id`/`supplier_name` are the firm an official resolved that claim
+    to and are null until they do. Showing the claim as though it were the firm
+    is the exact confusion this design exists to prevent.
     """
 
-    supplier_id: UUID
-    supplier_name: str
+    claimed_organisation: str
+    supplier_id: UUID | None = None
+    supplier_name: str | None = None
     job_title: str | None = None
     service_district: str
     approval_status: str
@@ -176,21 +183,22 @@ class GovernmentRegisterIn(RegisterBase):
 class SupplierRegisterIn(RegisterBase):
     """An application to act for an installer in one district.
 
-    No registration code: there is nothing here that only a real installer
-    could know, on purpose. Everything on this form is a *claim* -- who I am,
-    my National ID, the firm I work for, the region I work in -- and an
-    official in that region checks the claim before any of it means anything.
+    No registration code, and no dropdown: there is nothing on this form that
+    only a real installer could know, on purpose. Every field is a *claim* --
+    who I am, my National ID, the firm I work for, the region I work in -- and
+    an official in that region checks the claim before any of it means
+    anything.
     """
 
     phone: str | None = Field(default=None, max_length=40)
-    # Which installer this person works for. Companies are seeded; a supplier
-    # account joins one rather than inventing one, so the firm a consumer
-    # picks from a dropdown and rates is a single row however many staff
-    # logins it has.
-    supplier_code: str = Field(min_length=1, max_length=50)
+    # Typed, not chosen. The server does not look it up, match it or create
+    # anything from it: it is stored verbatim and an official resolves it to a
+    # supplier_company when they approve. See db/sql/dao/auth_queries.sql's
+    # create_supplier_profile and migration d9c3b8a41f27.
+    organisation_name: str = Field(min_length=2, max_length=200)
     # Which district's officials decide this, and the region this person acts
-    # for afterwards. Must be one the firm actually serves -- the same check
-    # a government worker's employing utility gets.
+    # for afterwards. Not narrowed by the organisation -- nothing is known
+    # about that firm yet, which is the whole point.
     service_district: str = Field(min_length=1, max_length=100)
     job_title: str | None = Field(default=None, max_length=100)
 
@@ -645,60 +653,49 @@ async def register_government(
 async def register_supplier(conn: Conn, payload: SupplierRegisterIn) -> TokenOut:
     """Apply for an installer's staff account in one district.
 
-    Two things are recorded: which company this person works for, and which
-    region they work it in. The company matters because it -- not the account
-    -- is what a consumer picks from a dropdown, applies to, and rates, so a
-    firm with three staff logins stays one supplier with one reputation. The
-    region matters because it names the officials who decide the application,
-    and because a firm covering four districts must not have one district's
-    official deciding for the other three.
+    Two things are recorded: the organisation this person says they work for,
+    and the region they work it in. The region names the officials who decide
+    the application, and it is stored rather than derived because a firm
+    covering four districts must not have one district's official deciding for
+    the other three.
 
-    **There is no registration code.** The shared string this endpoint used to
-    demand was the same for every installer, never rotated and tied to no
-    invitation, so anyone holding it could attach themselves to any firm on
-    the list -- and the list is public. Nothing on this form is now treated as
-    evidence: the account lands `pending`, and an official in the named
-    district compares the name, the National ID and the organisation against
-    records this form cannot reach before it becomes a supplier login.
+    **There is no registration code, and no list to pick the firm from.** The
+    shared string this endpoint used to demand was the same for every
+    installer, never rotated and tied to no invitation, so anyone holding it
+    could attach themselves to any firm on the list -- and the list is public.
+    Replacing it with a dropdown would have been the same mistake in a nicer
+    hat: choosing from a list proves only that you can read.
 
-    The district must be one the firm actually serves (422 otherwise), which
-    is the same check a government worker's employing utility gets and exists
-    for the same reason: an application filed where the firm has no presence
-    lands in a queue whose official has no way to verify it.
+    So the organisation is **typed, and stored as an assertion**. The server
+    does not resolve it -- not to an existing firm, not to a new one. That is
+    the official's job, and it is the substance of the check: they compare the
+    name, the National ID and the typed organisation against records this form
+    cannot reach, and then link the claim to a real `supplier_company` (see
+    routes_supplier_registrations.py). `supplier_id` is NULL until they do, so
+    a stranger is never on a firm's staff list while they wait.
+
+    The district is validated -- it must be a real, selectable one -- because
+    an application filed under a district that does not exist would notify
+    nobody. It is deliberately *not* checked against the organisation: nothing
+    is known about that firm yet.
     """
-    company = await conn.fetchrow(
-        sql("supplier_company_by_code"), payload.supplier_code
-    )
-    if company is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"no active supplier with code '{payload.supplier_code}'",
-        )
-
     district, _lat, _lon = await resolve_district(conn, payload.service_district)
-
-    serves = await conn.fetchval(
-        sql("supplier_company_serves"), company["supplier_id"], district
-    )
-    if not serves:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{company['name']} does not work in {district}",
-        )
 
     async with conn.transaction():
         account_id = await _new_account(
             conn, payload, "supplier", payload.phone
         )
+        organisation = payload.organisation_name.strip()
         await conn.execute(
             sql("create_supplier_profile"),
-            account_id, company["supplier_id"], payload.job_title,
-            district, "pending",
+            account_id, organisation, district, payload.job_title, "pending",
         )
         await _tell_the_officials(
             conn, district, account_id,
             full_name=payload.full_name.strip(),
-            what=f"Supplier registration ({company['name']})",
+            # The claim goes in the notification, because it is half of what
+            # the official is being asked to look at.
+            what=f"Supplier registration ({organisation})",
             entity_type="supplier_profile",
         )
         return await _token_response_for(conn, account_id)

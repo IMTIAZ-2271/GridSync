@@ -112,19 +112,6 @@ class DistributionCompany(BaseModel):
     districts: list[str]
 
 
-class SupplierCompanyBrief(BaseModel):
-    """An installer as the registration form needs to name one.
-
-    Deliberately narrower than SupplierCompany: no rating, no contact details.
-    See the note above the handlers below.
-    """
-
-    supplier_id: UUID
-    code: str
-    name: str
-    districts: list[str]
-
-
 class SupplierCompany(BaseModel):
     supplier_id: UUID
     code: str
@@ -153,30 +140,25 @@ DistrictFilter = Annotated[
 # installers cover which area. Nothing here is scoped to a site, so there is
 # no row-level question to ask — only whether the caller must be signed in.
 #
-# **The first three are deliberately unauthenticated.** The registration form
+# **The first two are deliberately unauthenticated.** The registration form
 # needs them before anyone has a token: a worker picks their region and, if
-# they are a government worker, their employer; a supplier's staff pick their
-# region and the firm they work for. None of those dropdowns can be populated
-# by a request that requires the account being created, and gating them would
-# leave the form permanently empty and staff registration impossible from the
-# UI.
+# they are a government worker, their employer, and a supplier's staff pick
+# their region. Neither dropdown can be populated by a request that requires
+# the account being created, and gating them would leave the form permanently
+# empty and staff registration impossible from the UI.
 #
-# What they expose is the list of districts, the public fact of which utility
-# serves each — printed on every electricity bill in the city — and which
-# installers work where, which is what a firm paints on its own van. No
-# account, site or meter is reachable through any of them.
+# What they expose is the list of districts and the public fact of which
+# utility serves each — printed on every electricity bill in the city. No
+# account, site or meter is reachable through either.
 #
-# The third one is narrow on purpose: /api/supplier-companies carries a name,
-# a code and a coverage list, and nothing else. /api/suppliers stays
-# authenticated because it carries ratings and contact details, is only wanted
-# after sign-in (applying for solar, filing an issue against an installer),
-# and an open supplier directory with scores attached is a scraping target
-# with no offsetting reason to be public.
-#
-# Naming a firm here proves nothing, which is the point of the redesign
-# around it: an applicant claiming to work for one is a claim an official
-# checks, not a credential. It replaced a shared registration code that every
-# installer in the city knew.
+# There is deliberately **no public list of installers**. There was one
+# briefly, when supplier registration picked its firm from a dropdown; the
+# organisation is typed now and resolved by an official, so nothing
+# unauthenticated needs that list, and an endpoint with no caller is a surface
+# with no reason. /api/suppliers stays authenticated: it carries ratings and
+# contact details, it is only wanted after sign-in (applying for solar, filing
+# an issue against an installer), and an open supplier directory with scores
+# attached is a scraping target with no offsetting reason to be public.
 # --------------------------------------------------------------------------
 
 @router.get("/api/districts", response_model=list[District])
@@ -205,18 +187,6 @@ async def list_distribution_companies(
     """
     rows = await conn.fetch(sql("list_distribution_companies"), district)
     return [DistributionCompany(**dict(r)) for r in rows]
-
-
-@router.get("/api/supplier-companies", response_model=list[SupplierCompanyBrief])
-async def list_supplier_companies_brief(conn: Conn) -> list[SupplierCompanyBrief]:
-    """The installer dropdown on the supplier registration form.
-
-    Unauthenticated, and minimal: who they are and where they work. Supplier
-    registration asks which firm the applicant works for and in which of that
-    firm's districts, and both have to be pickable before an account exists.
-    """
-    rows = await conn.fetch(sql("list_supplier_companies_brief"))
-    return [SupplierCompanyBrief(**dict(r)) for r in rows]
 
 
 @router.get("/api/suppliers", response_model=list[SupplierCompany])

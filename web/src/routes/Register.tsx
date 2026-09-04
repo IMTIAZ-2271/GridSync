@@ -5,7 +5,6 @@ import {
   api,
   type DistributionCompany,
   type Role,
-  type SupplierCompanyBrief,
   type TokenResponse,
   type WorkerKind,
 } from "../lib/api";
@@ -27,10 +26,12 @@ import { AuthShell, FIELD, LABEL, SubmitButton } from "../components/AuthShell";
  *   it before any work reaches them.
  * - **Government** — the unique code issued to that official, which carries
  *   the district they govern. The only code left on this page.
- * - **Supplier** — the installer they work for and the region they work it in.
- *   Also an application. There used to be a shared staff code here; it was one
- *   string for every firm in the city, so it proved nothing, and it is gone.
- *   The official checks the name, National ID and organisation instead.
+ * - **Supplier** — the organisation they work for, *typed*, and the region
+ *   they work it in. Also an application. There used to be a shared staff code
+ *   here; it was one string for every firm in the city, so it proved nothing.
+ *   A dropdown of firms replaced it briefly and was the same mistake in a
+ *   nicer hat — picking from a list proves only that you can read. The name is
+ *   an assertion an official checks and then resolves to a real firm.
  *
  * Two of the four therefore end on a waiting screen rather than in a portal
  * (see auth/RequireAuth.tsx), which is why the submit button says what it is
@@ -53,7 +54,7 @@ const BLURB: Record<Tab, string> = {
   government:
     "Regulator access. Requires the unique official ID issued to you, which sets the district you oversee.",
   supplier:
-    "Solar installer staff. An official in your region checks your details against their records before your account is activated.",
+    "Solar installer staff. An official in your region checks your details against their records before your account is activated. Type your organisation's name as it is registered.",
 };
 
 /**
@@ -86,22 +87,6 @@ function useDistributionCompanies(enabled: boolean) {
   return rows;
 }
 
-/**
- * The installers, for the supplier tab.
- *
- * `/api/supplier-companies` is the narrow, unauthenticated list — name, code
- * and coverage, no ratings or contact details. Picking a firm here is a claim,
- * not a credential: an official verifies it.
- */
-function useSupplierCompanies(enabled: boolean) {
-  const [rows, setRows] = useState<SupplierCompanyBrief[]>([]);
-  useEffect(() => {
-    if (!enabled || rows.length) return;
-    api.listSupplierCompanies().then(setRows).catch(() => setRows([]));
-  }, [enabled, rows.length]);
-  return rows;
-}
-
 export default function Register() {
   const { account, isLoading, adopt } = useAuth();
   const navigate = useNavigate();
@@ -120,8 +105,8 @@ export default function Register() {
 
   // Government
   const [code, setCode] = useState("");
-  // Supplier
-  const [supplierCode, setSupplierCode] = useState("");
+  // Supplier — typed free text, deliberately not a code or an id.
+  const [organisation, setOrganisation] = useState("");
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -132,24 +117,16 @@ export default function Register() {
   const companies = useDistributionCompanies(
     tab === "worker" && workerKind === "government",
   );
-  const installers = useSupplierCompanies(tab === "supplier");
 
   // Only the utilities that actually serve the chosen region. The server
   // refuses the mismatch with a 422 either way; narrowing the list here means
   // nobody has to discover that by submitting.
+  //
+  // There is deliberately no equivalent for the supplier tab: nothing is known
+  // about the typed organisation yet, so every selectable region is offered.
   const eligible = district
     ? companies.filter((c) => c.districts.includes(district))
     : companies;
-
-  // Same rule for installers, read the other way round: the firm is chosen
-  // first (it is the thing the applicant actually knows), so the region list
-  // narrows to where that firm works.
-  const installerDistricts = supplierCode
-    ? (installers.find((f) => f.code === supplierCode)?.districts ?? [])
-    : null;
-  const supplierRegions = installerDistricts
-    ? districts.filter((d) => installerDistricts.includes(d))
-    : districts;
 
   if (!isLoading && account) {
     return <Navigate to={HOME_FOR_ROLE[account.role]} replace />;
@@ -158,7 +135,7 @@ export default function Register() {
   function switchTab(next: Tab) {
     setTab(next);
     setCode("");
-    setSupplierCode("");
+    setOrganisation("");
     setCompanyId("");
     // The region means different things on the two tabs it appears on, and a
     // value carried across would be a choice nobody made.
@@ -204,7 +181,7 @@ export default function Register() {
         token = await api.registerSupplier({
           ...base,
           phone: phone.trim() || null,
-          supplier_code: supplierCode.trim(),
+          organisation_name: organisation.trim(),
           service_district: district,
         });
       }
@@ -225,7 +202,7 @@ export default function Register() {
     (tab !== "worker" ||
       (district && (workerKind === "private" || companyId))) &&
     (tab !== "government" || code.trim()) &&
-    (tab !== "supplier" || (supplierCode.trim() && district));
+    (tab !== "supplier" || (organisation.trim().length >= 2 && district));
 
   return (
     <AuthShell
@@ -439,50 +416,36 @@ export default function Register() {
           <>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field
-                id="reg-supplier"
+                id="reg-organisation"
                 label="Your organisation"
-                hint="The installer you work for."
+                hint="The installer you work for, as it is registered."
               >
-                <select
-                  id="reg-supplier"
-                  value={supplierCode}
-                  onChange={(e) => {
-                    setSupplierCode(e.target.value);
-                    // A region the new firm does not cover must not stay
-                    // selected -- the server would refuse it on submit.
-                    setDistrict("");
-                  }}
+                <input
+                  id="reg-organisation"
+                  value={organisation}
+                  onChange={(e) => setOrganisation(e.target.value)}
+                  placeholder="Noor Solar Ltd"
                   className={`mt-1 ${FIELD}`}
+                  minLength={2}
+                  maxLength={200}
                   required
-                >
-                  <option value="">Select an installer…</option>
-                  {installers.map((f) => (
-                    <option key={f.supplier_id} value={f.code}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </Field>
 
               <Field
                 id="reg-supplier-district"
                 label="Region"
-                hint={
-                  supplierCode
-                    ? "Where you work for them. An official here approves you."
-                    : "Pick an installer first."
-                }
+                hint="Where you work. An official here approves you."
               >
                 <select
                   id="reg-supplier-district"
                   value={district}
                   onChange={(e) => setDistrict(e.target.value)}
                   className={`mt-1 ${FIELD}`}
-                  disabled={!supplierCode}
                   required
                 >
                   <option value="">Select a region…</option>
-                  {supplierRegions.map((d) => (
+                  {districts.map((d) => (
                     <option key={d} value={d}>
                       {d}
                     </option>

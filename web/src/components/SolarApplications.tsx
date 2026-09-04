@@ -170,7 +170,7 @@ function ApplyForm({
   // naming a firm that does not serve the district, so offering one would be a
   // button that cannot work.
   const suppliers = useQuery({
-    queryKey: ["suppliers", district ?? "all"],
+    queryKey: queryKeys.suppliers(district),
     queryFn: () => api.listSuppliers(district),
     enabled: !!district,
   });

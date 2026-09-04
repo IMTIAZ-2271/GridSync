@@ -201,19 +201,40 @@ export interface PendingSupplier {
   national_id: string | null;
   phone: string | null;
   job_title: string | null;
-  supplier_id: string;
-  supplier_code: string;
-  supplier_name: string;
-  license_no: string | null;
-  /** The one district this person registered for, not everywhere the firm works. */
+  /** What the applicant typed. An assertion, never a key. */
+  claimed_organisation: string;
+  /** The one district this person registered for, not everywhere a firm works. */
   service_district: string;
   approval_status: ApprovalStatus;
   rejection_reason: string | null;
   approved_at: Timestamp | null;
+  /** The firm the claim was resolved to. Null until an official links it. */
+  supplier_id: string | null;
+  supplier_name: string | null;
+  /**
+   * An exact, case-insensitive match on the claim -- a shortcut for the
+   * ordinary case, never an answer. Null means "nothing obvious matched", not
+   * "this is a new firm"; which of the two it is, is the official's call.
+   */
+  suggested_supplier_id: string | null;
+  suggested_supplier_name: string | null;
+  suggested_supplier_code: string | null;
   registered_at: Timestamp;
 }
 
-export type SupplierDecisionBody = WorkerDecisionBody;
+/**
+ * A verdict, and -- when approving -- what the typed claim resolves to.
+ *
+ * Approving takes exactly one of `supplier_id` or `new_supplier`; a rejection
+ * takes neither. The server refuses any other combination rather than picking
+ * one, so a mis-filled form is visible instead of silently half-applied.
+ */
+export interface SupplierDecisionBody {
+  decision: "approve" | "reject";
+  reason?: string | null;
+  supplier_id?: string | null;
+  new_supplier?: { name: string; license_no?: string | null } | null;
+}
 
 /**
  * The statuses a triager can set. Narrower than `IssueStatus` on purpose:
@@ -776,8 +797,11 @@ export interface WorkerContext {
  * list the firm covers.
  */
 export interface SupplierContext {
-  supplier_id: string;
-  supplier_name: string;
+  /** What this person typed at registration. Always present. */
+  claimed_organisation: string;
+  /** The firm an official resolved that claim to. Null until they do. */
+  supplier_id: string | null;
+  supplier_name: string | null;
   job_title: string | null;
   service_district: string;
   approval_status: ApprovalStatus;
@@ -858,15 +882,17 @@ export interface GovernmentRegisterBody extends RegisterBase {
 }
 
 /**
- * Also an application. There is deliberately no registration code: nothing on
- * this form is evidence, and an official in `service_district` checks the
- * name, National ID and organisation against records the form cannot reach.
+ * Also an application. There is deliberately no registration code and no
+ * installer dropdown: nothing on this form is evidence. The organisation is
+ * typed and stored as a claim, and an official in `service_district` checks
+ * the name, National ID and that claim against records the form cannot reach
+ * before resolving it to a real firm.
  */
 export interface SupplierRegisterBody extends RegisterBase {
   phone?: string | null;
-  /** Which installer this person works for, e.g. NOOR. */
-  supplier_code: string;
-  /** Must be one of that firm's districts; the server answers 422 otherwise. */
+  /** Typed, not chosen. The server stores it verbatim and resolves nothing. */
+  organisation_name: string;
+  /** Any selectable district -- it is not narrowed by the organisation. */
   service_district: string;
   job_title?: string | null;
 }
@@ -887,19 +913,6 @@ export interface DistributionCompany {
   name: string;
   contact_email: string | null;
   contact_phone: string | null;
-  districts: string[];
-}
-
-/**
- * An installer as the registration form names one: no rating, no contact
- * details. `/api/supplier-companies` is unauthenticated for that reason --
- * the supplier tab has to name a firm before an account exists. Naming one
- * proves nothing; an official checks the claim.
- */
-export interface SupplierCompanyBrief {
-  supplier_id: string;
-  code: string;
-  name: string;
   districts: string[];
 }
 
@@ -1411,9 +1424,6 @@ export const api = {
       `/distribution-companies${district ? `?district=${encodeURIComponent(district)}` : ""}`,
     ),
 
-  listSupplierCompanies: () =>
-    request<SupplierCompanyBrief[]>("/supplier-companies"),
-
   listSuppliers: (district?: string) =>
     request<SupplierCompany[]>(
       `/suppliers${district ? `?district=${encodeURIComponent(district)}` : ""}`,
@@ -1757,6 +1767,10 @@ export const queryKeys = {
   inverters: () => ["inverters"] as const,
   swappableMeters: (siteId: string) => ["sites", siteId, "swappable-meters"] as const,
   viewStates: () => ["views"] as const,
+  // Matches the inline key SolarApplications.tsx used to spell out, so the
+  // household's installer list and the official's linking dropdown are one
+  // cache entry rather than two that drift.
+  suppliers: (district?: string) => ["suppliers", district ?? "all"] as const,
   pendingWorkers: () => ["workers", "pending"] as const,
   pendingSupplierRegistrations: () =>
     ["supplier-registrations", "pending"] as const,
