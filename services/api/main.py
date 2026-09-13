@@ -45,6 +45,7 @@ from .routes_agreements import router as agreements_router
 from .routes_analytics import router as analytics_router
 from .routes_applications import router as applications_router
 from .routes_auth import router as auth_router
+from .routes_commissioning import router as commissioning_router
 from .orgs import router as orgs_router
 from .routes_devices import router as devices_router
 from .routes_inverters import router as inverters_router
@@ -112,6 +113,7 @@ app.include_router(auth_router)
 app.include_router(orgs_router)
 app.include_router(sites_router)
 app.include_router(devices_router)
+app.include_router(commissioning_router)
 app.include_router(inverters_router)
 app.include_router(meters_router)
 app.include_router(issues_router)

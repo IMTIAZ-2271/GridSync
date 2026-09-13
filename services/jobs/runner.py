@@ -32,6 +32,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from ..api.db import pool_context
 from .billing import run_scheduled_billing
+from .commissioning import sweep_commissioning
 from .config import Settings, load
 from .consumption import sweep_consumption_limits
 from .deadlines import sweep_expired_offers, sweep_overdue_starts
@@ -66,6 +67,14 @@ JOBS: tuple[Job, ...] = (
         name="overdue-starts",
         summary="reassign accepted work orders that were never started",
         run=lambda pool, s: sweep_overdue_starts(pool, s.batch_limit),
+        trigger=lambda s: IntervalTrigger(
+            minutes=s.deadline_sweep_minutes, timezone=s.timezone
+        ),
+    ),
+    Job(
+        name="commissioning",
+        summary="fail meter handshakes past their deadline and revoke unused keys",
+        run=lambda pool, s: sweep_commissioning(pool, s.batch_limit),
         trigger=lambda s: IntervalTrigger(
             minutes=s.deadline_sweep_minutes, timezone=s.timezone
         ),

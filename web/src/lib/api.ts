@@ -493,6 +493,61 @@ export type DeviceHealth =
   | "unknown";
 
 export type DeviceType = "meter" | "inverter";
+
+/** Where a billing meter stands with its utility's network. Resolved on the
+ *  server against the stored deadlines, so it is right between sweeps. */
+export type ConnectionState =
+  | "not_commissioned"
+  | "offered"
+  | "offer_lapsed"
+  | "activated"
+  | "activation_lapsed"
+  | "live"
+  | "failed"
+  | "cancelled";
+
+export type CommissioningFailure =
+  | "no_source"
+  | "offer_expired"
+  | "activation_expired"
+  | "rejected_by_source";
+
+export interface MeterConnection {
+  device_id: string;
+  serial_no: string;
+  site_id: string;
+  site_label: string;
+  district: string;
+  point_label: string;
+  last_seen_at: string | null;
+  state: ConnectionState;
+  needs_attention: boolean;
+  commissioning_id: string | null;
+  head_end: string | null;
+  failed_reason: CommissioningFailure | null;
+  /** The utility network's own words when it refused the meter. */
+  failure_detail: string | null;
+  offered_at: string | null;
+  offer_expires_at: string | null;
+  activation_expires_at: string | null;
+  live_at: string | null;
+  ended_at: string | null;
+}
+
+export interface CommissioningOverview {
+  /** False where the server does not commission meters at all. Every meter
+   *  reads not_commissioned there by design, and pages should say nothing. */
+  enabled: boolean;
+  meters: MeterConnection[];
+}
+
+export interface CommissioningRetry {
+  commissioning_id: string;
+  status: "offered" | "failed";
+  offer_expires_at: string;
+  backfill_from: DateOnly | null;
+  backfill_to: DateOnly | null;
+}
 export type BillingRole = "billing" | "generation_only" | "check_meter";
 
 export interface SiteDevice {
@@ -1663,6 +1718,16 @@ export const api = {
   /** Every reporting device in the fleet. Government and supplier only. */
   fleetDevices: () => request<SiteDevice[]>("/devices"),
 
+  /** Every live billing meter and its connection to its utility's network.
+   *  Officials see their district; suppliers the fleet. */
+  commissioning: () => request<CommissioningOverview>("/commissioning"),
+
+  /** Offer a meter to its utility's network again. Officials only. */
+  retryCommissioning: (deviceId: string) =>
+    request<CommissioningRetry>(`/devices/${deviceId}/commissioning`, {
+      method: "POST",
+    }),
+
   listIssues: () => request<Issue[]>("/issues"),
 
   createIssue: (body: IssueCreate) =>
@@ -1752,6 +1817,7 @@ export const queryKeys = {
   consumptionLimit: (id: string) =>
     ["sites", id, "consumption-limit"] as const,
   fleetDevices: () => ["devices"] as const,
+  commissioning: () => ["commissioning"] as const,
   issues: () => ["issues"] as const,
   issueTargets: (siteId: string) =>
     ["sites", siteId, "issue-targets"] as const,

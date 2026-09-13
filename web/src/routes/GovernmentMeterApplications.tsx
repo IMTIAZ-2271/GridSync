@@ -9,6 +9,7 @@ import {
   type WorkOrder,
 } from "../lib/api";
 import DispatchVisit from "../components/DispatchVisit";
+import MeterConnections from "../components/MeterConnections";
 import { meterApplicationStage } from "../lib/fulfilment";
 import {
   VIEWS,
@@ -57,6 +58,17 @@ import {
  * hardware they never saw is the gap the whole flow closes.
  */
 export default function GovernmentMeterApplications() {
+  // Connections sit above the queue: an application ends in a registered
+  // meter, and this is where the official sees whether it actually reports.
+  return (
+    <div className="space-y-6">
+      <MeterConnections />
+      <MeterApplicationQueue />
+    </div>
+  );
+}
+
+function MeterApplicationQueue() {
   // Marks this list seen on open and hands back the watermark it
   // replaced, so rows that arrived since the last visit are lit for
   // exactly this render and normal on the next load.
