@@ -33,6 +33,24 @@ LEFT JOIN meter_spec ms ON ms.device_id = d.device_id
 WHERE d.device_id = $1;
 
 
+-- name: lock_device_for_batch
+-- Take a share lock on the device for the batch's transaction, and re-read
+-- whether it is still installed.
+--
+-- A meter swap retires the device with an UPDATE and then measures the
+-- connection's reading horizon to decide where the replacement's history
+-- starts. Without this lock a batch authenticated just before the retire
+-- commits its readings just after it, past the horizon the swap measured, and
+-- both meters report the same intervals. FOR SHARE, not FOR UPDATE: batches
+-- for one device may run concurrently with each other, only the retire has to
+-- wait. In READ COMMITTED a batch that waited on the retire gets the retired
+-- row back, and refuses.
+SELECT removed_at
+FROM device
+WHERE device_id = $1
+FOR SHARE;
+
+
 -- name: find_ingest_batch
 -- The batch this Idempotency-Key already created, if any.
 --
@@ -167,4 +185,14 @@ LEFT JOIN inverter_spec ivs ON ivs.device_id = d.device_id
 LEFT JOIN meter_spec    ms  ON ms.device_id  = d.device_id
 WHERE d.removed_at IS NULL
   AND d.reports_telemetry
+  -- A device in a commissioning handshake is keyed by its head-end. Rotating
+  -- it here would cut a live meter off with nothing on either side saying
+  -- why. Failed and cancelled handshakes hold no key, so those devices are
+  -- fair game again.
+  AND NOT EXISTS (
+      SELECT 1
+      FROM device_commissioning dc
+      WHERE dc.device_id = d.device_id
+        AND dc.status IN ('offered', 'activated', 'live')
+  )
 ORDER BY s.label, d.device_type, d.serial_no;
