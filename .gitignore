@@ -4,6 +4,7 @@
 # file here meant to be public, so it is excluded from the pattern.
 .env.*
 !.env.example
+.DS_Store
 __pycache__/
 *.pyc
 node_modules/
