@@ -6,8 +6,10 @@ import {
   formatKwh,
   queryKeys,
   type DeviceHealth,
+  type MeterConnection,
   type SiteDevice,
 } from "../lib/api";
+import { CONNECTION, connectionHint } from "../lib/commissioning";
 import { HEALTH, needsAttention, roleOf, worstHealth } from "../lib/devices";
 import {
   Badge,
@@ -31,6 +33,11 @@ import {
  * Sorted worst-first and defaulting to the attention filter, because the
  * utility's question here is not "what do we own" -- the site list answers
  * that -- it is "what has stopped talking to us".
+ *
+ * Where the server commissions meters, billing meters also show their
+ * connection to their utility's network, read-only. Health says whether
+ * readings are stored; connection says why a silent meter might be silent.
+ * Retrying a connection is the district official's, not the supplier's.
  */
 
 const ORDER: DeviceHealth[] = [
@@ -51,6 +58,17 @@ export default function SupplierEquipment() {
     queryKey: queryKeys.fleetDevices(),
     queryFn: api.fleetDevices,
   });
+  const commissioning = useQuery({
+    queryKey: queryKeys.commissioning(),
+    queryFn: api.commissioning,
+  });
+  // Absent while loading, and where the server does not commission meters:
+  // the column is simply not drawn rather than showing "Not connected" for
+  // every meter on an estate that never connects them.
+  const connections = useMemo(() => {
+    if (!commissioning.data?.enabled) return null;
+    return new Map(commissioning.data.meters.map((m) => [m.device_id, m]));
+  }, [commissioning.data]);
 
   const counts = useMemo(() => {
     const tally = {} as Record<DeviceHealth, number>;
@@ -193,12 +211,19 @@ export default function SupplierEquipment() {
                   <th className="px-3 py-3 text-left">Serial</th>
                   <th className="px-3 py-3 text-right">Coverage</th>
                   <th className="px-3 py-3 text-left">Last reading</th>
+                  {connections && (
+                    <th className="px-3 py-3 text-left">Connection</th>
+                  )}
                   <th className="px-5 py-3 text-left">State</th>
                 </tr>
               </thead>
               <tbody>
                 {shown.map((device) => (
-                  <DeviceRow key={device.device_id} device={device} />
+                  <DeviceRow
+                    key={device.device_id}
+                    device={device}
+                    connections={connections}
+                  />
                 ))}
               </tbody>
             </table>
@@ -216,7 +241,14 @@ export default function SupplierEquipment() {
   );
 }
 
-function DeviceRow({ device }: { device: SiteDevice }) {
+function DeviceRow({
+  device,
+  connections,
+}: {
+  device: SiteDevice;
+  connections: Map<string, MeterConnection> | null;
+}) {
+  const connection = connections?.get(device.device_id);
   const health = HEALTH[device.health];
   const isBillingMeter = device.billing_role === "billing";
 
@@ -253,6 +285,19 @@ function DeviceRow({ device }: { device: SiteDevice }) {
             })
           : "never"}
       </td>
+      {connections && (
+        <td className="px-3 py-3">
+          {connection ? (
+            <span title={connectionHint(connection)}>
+              <Badge tone={CONNECTION[connection.state].tone}>
+                {CONNECTION[connection.state].label}
+              </Badge>
+            </span>
+          ) : (
+            <span className="text-xs text-ink-muted">—</span>
+          )}
+        </td>
+      )}
       <td className="px-5 py-3">
         <Badge tone={health.tone}>{health.label}</Badge>
       </td>
