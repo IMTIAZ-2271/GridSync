@@ -54,6 +54,7 @@ from pydantic import BaseModel, Field, field_validator
 from services.api.auth import verify_password
 from services.api.db import Conn, create_pool
 from services.api.queries import sql
+from services.ingest.commissioning import router as commissioning_router
 
 # --------------------------------------------------------------------------
 # Policy
@@ -141,6 +142,10 @@ class BatchResult(BaseModel):
     #: Omitted on a replay -- the per-reading outcomes of the original batch
     #: are not retained, only its counts.
     outcomes: list[ReadingOutcome] = Field(default_factory=list)
+    #: True for exactly one batch in a commissioned device's life: the first
+    #: one, signed with the key the handshake issued, that delivered usable
+    #: data. That batch is what completes the handshake.
+    went_live: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -162,6 +167,7 @@ app = FastAPI(
     lifespan=lifespan,
     description=__doc__,
 )
+app.include_router(commissioning_router)
 
 
 @app.get("/health")
@@ -284,6 +290,17 @@ async def ingest_readings(
                 status_code=409,
                 detail="this Idempotency-Key was used by a different device",
             )
+        # A replay still completes a commissioning handshake. The key that
+        # signed it authenticated a moment ago, and the batch's readings are
+        # held -- which is what live means. Without this, a head-end re-sending
+        # a batch it delivered under a previous handshake of the same device
+        # got the original counts back and its new handshake never went live.
+        went_live = False
+        if existing["accepted_count"] or existing["duplicate_count"]:
+            went_live = (
+                await conn.fetchval(sql("mark_commissioning_live"), payload.device_id)
+                is not None
+            )
         return BatchResult(
             batch_id=existing["batch_id"],
             device_id=existing["device_id"],
@@ -295,6 +312,7 @@ async def ingest_readings(
             # predates this service and has three buckets, not four.
             late=0,
             rejected=existing["rejected_count"],
+            went_live=went_live,
         )
 
     now = datetime.now(timezone.utc)
@@ -302,6 +320,22 @@ async def ingest_readings(
     outcomes: list[ReadingOutcome] = []
 
     async with conn.transaction():
+        # Hold the device row for the whole batch. Authentication above read
+        # it outside this transaction, so without a lock a meter retired by a
+        # swap *while this batch is in flight* still has its readings land
+        # afterwards -- after the swap has already measured the connection's
+        # history and offered the replacement meter the next day. Found by the
+        # end-to-end run: one day reported by both meters. FOR SHARE makes the
+        # swap's retire wait for this batch, and makes a batch that starts
+        # after the retire see it and stop.
+        removed = await conn.fetchrow(sql("lock_device_for_batch"), payload.device_id)
+        if removed is None or removed["removed_at"] is not None:
+            raise HTTPException(
+                status_code=401,
+                detail="device authentication failed",
+                headers={"WWW-Authenticate": "DeviceKey"},
+            )
+
         try:
             batch_id = await conn.fetchval(
                 sql("open_ingest_batch"),
@@ -388,6 +422,7 @@ async def ingest_readings(
         # Only on a delivery that actually contained usable data. A device
         # posting nothing but duplicates has still checked in, but one posting
         # nothing but rejects has not proved it is working.
+        went_live = False
         if accepted or duplicates:
             newest = max(
                 r.interval_start
@@ -395,6 +430,13 @@ async def ingest_readings(
                 if o.outcome in ("accepted", "duplicate")
             )
             await conn.execute(sql("touch_device_seen"), payload.device_id, newest)
+            # The same evidence completes a commissioning handshake: this key
+            # has now signed data that landed. Same transaction, so a batch
+            # that rolls back cannot leave a handshake claiming to be live.
+            went_live = (
+                await conn.fetchval(sql("mark_commissioning_live"), payload.device_id)
+                is not None
+            )
 
     return BatchResult(
         batch_id=batch_id,
@@ -406,4 +448,5 @@ async def ingest_readings(
         late=late,
         rejected=rejected,
         outcomes=outcomes,
+        went_live=went_live,
     )

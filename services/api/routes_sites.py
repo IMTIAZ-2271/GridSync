@@ -26,6 +26,11 @@ from .auth import (
     visible_site_or_404,
 )
 from .billing import next_month, run_billing_with_retry
+from .commissioning import (
+    cancel_commissioning,
+    commissioning_enabled,
+    offer_commissioning,
+)
 from .db import Conn
 from .orgs import resolve_district
 from .queries import sql
@@ -208,6 +213,11 @@ class MeterRegisterOut(BaseModel):
     backfill_from: date
     backfill_to: date
     readings_backfilled: int
+    # True when commissioning is on: nothing was written here, and the history
+    # window above arrives from the meter's head-end instead. Deliberately a
+    # yes/no and not the handshake's state -- the household is not shown a
+    # meter's health (Consumer 9), only told readings are on their way.
+    readings_pending: bool = False
     # The meter this one replaced, when it replaced one. Its readings stay on
     # the connection -- only the device is retired.
     replaced_serial_no: str | None = None
@@ -719,6 +729,11 @@ async def register_meter(
             replaced = await conn.fetchrow(
                 sql("retire_point_billing_meter"), point["point_id"]
             )
+            if replaced is not None:
+                # Takes the old meter off its head-end's feed. Whatever the
+                # switch says now: a handshake opened while it was on must not
+                # outlive the device.
+                await cancel_commissioning(conn, replaced["device_id"])
 
         if payload.replace_existing:
             # Never re-cover ground the retired meter already holds:
@@ -790,20 +805,39 @@ async def register_meter(
                 agreement["inverter_device_id"],
             )
 
-        # p_capacity_kw is the solar the new meter nets against. NULL on an
-        # ordinary install (no panels behind this connection, so import is
-        # plain consumption); the inverter's rating once the swap has made
-        # export measurable, which is what starts the connection earning
-        # credit. The window is already clipped past the retired meter's last
-        # reading above, so this never re-covers ground and never double-counts.
-        reading_count = (
-            await conn.fetchval(
-                "SELECT backfill_readings($1, $2, $3, $4)",
-                device_id, backfill_from, backfill_to, solar_capacity_kw,
+        readings_pending = commissioning_enabled()
+        if readings_pending:
+            # The meter's history comes from its utility's head-end, through
+            # ingest, over exactly the window the SQL backfill below would
+            # have written -- already clipped past the retired meter's last
+            # reading. The head-end reads the solar behind this connection off
+            # the offer, so the attach above is all it needs.
+            await offer_commissioning(
+                conn,
+                device_id=device_id,
+                point_id=point["point_id"],
+                meter_asset_id=payload.meter_asset_id,
+                backfill_from=backfill_from,
+                backfill_to=backfill_to,
+                requested_by=principal.account_id,
             )
-            if backfill_from <= backfill_to
-            else 0
-        )
+            reading_count = 0
+        else:
+            # p_capacity_kw is the solar the new meter nets against. NULL on an
+            # ordinary install (no panels behind this connection, so import is
+            # plain consumption); the inverter's rating once the swap has made
+            # export measurable, which is what starts the connection earning
+            # credit. The window is already clipped past the retired meter's
+            # last reading above, so this never re-covers ground and never
+            # double-counts.
+            reading_count = (
+                await conn.fetchval(
+                    "SELECT backfill_readings($1, $2, $3, $4)",
+                    device_id, backfill_from, backfill_to, solar_capacity_kw,
+                )
+                if backfill_from <= backfill_to
+                else 0
+            )
 
     return MeterRegisterOut(
         device_id=device_id,
@@ -814,6 +848,7 @@ async def register_meter(
         backfill_from=backfill_from,
         backfill_to=backfill_to,
         readings_backfilled=reading_count,
+        readings_pending=readings_pending,
         replaced_serial_no=replaced["serial_no"] if replaced else None,
     )
 

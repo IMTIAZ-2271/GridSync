@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import secrets
 from pathlib import Path
 
 import asyncpg
@@ -34,17 +33,9 @@ import asyncpg
 from services.api.auth import hash_password
 from services.api.db import PROJECT_ROOT, database_url, init_connection
 from services.api.queries import sql
+from services.ingest.keys import mint_device_key as mint
 
 DEFAULT_KEYFILE = PROJECT_ROOT / "device_keys.json"
-
-#: Long enough that guessing is hopeless, short enough to paste. The prefix is
-#: there so a leaked key is recognisable in a log as a GridSync device key and
-#: can be revoked, rather than looking like any other opaque string.
-KEY_PREFIX = "gsk_"
-
-
-def mint() -> str:
-    return KEY_PREFIX + secrets.token_urlsafe(32)
 
 
 async def run(out: Path, only_missing: bool, dry_run: bool) -> int:

@@ -5,7 +5,7 @@ about one constraint is not buried under twenty columns of irrelevant setup.
 Every value is deterministic; nothing here is random.
 """
 import itertools
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import asyncpg
@@ -366,6 +366,106 @@ async def make_assignment(conn: asyncpg.Connection, order_id: str,
         overrides.pop("offer_expires_at", None),
         overrides.pop("start_deadline_at", None),
     )
+
+
+async def make_distribution_company(conn: asyncpg.Connection) -> str:
+    tag = unique_suffix()
+    return await conn.fetchval(
+        "INSERT INTO distribution_company (code, name) VALUES ($1, $2) "
+        "RETURNING company_id",
+        f"TEST-DC-{tag}", f"Test Distribution {tag}",
+    )
+
+
+async def make_telemetry_source(conn: asyncpg.Connection,
+                                company_id: str | None = None,
+                                **overrides) -> str:
+    """A utility's head-end. Pass `source_key_hash=` a real argon2 hash for a
+    test that authenticates as it; the default can never verify."""
+    return await conn.fetchval(
+        """
+        INSERT INTO telemetry_source (distribution_company_id, name,
+                                      source_key_hash, disabled_at)
+        VALUES ($1, $2, $3, $4)
+        RETURNING source_id
+        """,
+        company_id or await make_distribution_company(conn),
+        overrides.pop("name", f"Test head-end {unique_suffix()}"),
+        overrides.pop("source_key_hash", "not-a-real-hash"),
+        overrides.pop("disabled_at", None),
+    )
+
+
+#: Explicit instants for commissioning rows: now() is the transaction start,
+#: and a test about ordering needs values it chose.
+COMMISSIONING_T0 = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+
+
+async def make_commissioning(conn: asyncpg.Connection, device_id: str,
+                             source_id: str | None, **overrides) -> str:
+    """One handshake row. Defaults to an offer made at COMMISSIONING_T0.
+
+    Every lifecycle column is passed explicitly, so a test building a
+    particular state states all of it and nothing is left to a default that
+    could make an illegal row accidentally legal.
+    """
+    t0 = COMMISSIONING_T0
+    return await conn.fetchval(
+        """
+        INSERT INTO device_commissioning (
+            device_id, source_id, status,
+            offered_at, offer_expires_at,
+            activated_at, activation_expires_at, activation_count,
+            live_at, ended_at, failed_reason, failure_detail,
+            backfill_from, backfill_to
+        )
+        VALUES ($1, $2, $3::commissioning_status,
+                $4, $5, $6, $7, $8, $9, $10,
+                $11::commissioning_failure, $12, $13, $14)
+        RETURNING commissioning_id
+        """,
+        device_id, source_id,
+        overrides.pop("status", "offered"),
+        overrides.pop("offered_at", t0),
+        overrides.pop("offer_expires_at", t0 + timedelta(hours=24)),
+        overrides.pop("activated_at", None),
+        overrides.pop("activation_expires_at", None),
+        overrides.pop("activation_count", 0),
+        overrides.pop("live_at", None),
+        overrides.pop("ended_at", None),
+        overrides.pop("failed_reason", None),
+        overrides.pop("failure_detail", None),
+        overrides.pop("backfill_from", None),
+        overrides.pop("backfill_to", None),
+    )
+
+
+async def make_official(conn: asyncpg.Connection, district: str = "Dhanmondi") -> str:
+    """A government account governing `district`, via a claimed official code."""
+    tag = unique_suffix()
+    account_id = await conn.fetchval(
+        """
+        INSERT INTO account (email, password_hash, full_name, role)
+        VALUES ($1, 'not-a-real-hash', 'Test Official', 'government')
+        RETURNING account_id
+        """,
+        f"test-official-{tag}@example.test",
+    )
+    code = f"TEST-GOV-{tag}"
+    await conn.execute(
+        """
+        INSERT INTO government_official_code (code, district, issued_to,
+                                              claimed_by_account_id, claimed_at)
+        VALUES ($1, $2, 'Test Official', $3, now())
+        """,
+        code, district, account_id,
+    )
+    await conn.execute(
+        "INSERT INTO government_profile (account_id, district, official_code) "
+        "VALUES ($1, $2, $3)",
+        account_id, district, code,
+    )
+    return account_id
 
 
 async def set_consumption_limit(conn: asyncpg.Connection, site_id: str,
