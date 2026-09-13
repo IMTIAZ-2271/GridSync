@@ -1191,6 +1191,10 @@ export interface MeterRegisterResult {
   backfill_from: DateOnly;
   backfill_to: DateOnly;
   readings_backfilled: number;
+  /** True when the meter's readings will arrive from its utility rather than
+   *  having been written at install. A yes/no only -- the household is never
+   *  shown the connection's state (Consumer 9). */
+  readings_pending: boolean;
 }
 
 export interface SolarRegisterBody {

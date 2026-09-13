@@ -643,6 +643,8 @@ function AssignMeter({
                 <span className="font-mono">{result.replaced_serial_no}</span>.
                 The connection keeps its history and its credit balance.
               </>
+            ) : result.readings_pending ? (
+              <>. Readings will appear here once the meter connects.</>
             ) : (
               <>
                 {" "}
