@@ -25,3 +25,7 @@ device_keys.json
 
 # Local pre-reset database dumps -- large, and not the repo's business.
 backups/
+
+# Head-end credentials and local state -- plaintext keys, dev only.
+source_keys.json
+headend_state/
