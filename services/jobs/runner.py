@@ -23,6 +23,7 @@ import logging
 import signal
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import asyncpg
@@ -36,7 +37,7 @@ from .commissioning import sweep_commissioning
 from .config import Settings, load
 from .consumption import sweep_consumption_limits
 from .deadlines import sweep_expired_offers, sweep_overdue_starts
-from .maintenance import ensure_partitions
+from .maintenance import ensure_partitions, prune_login_attempts
 from .rollups import refresh_rollups
 
 log = logging.getLogger("services.jobs")
@@ -101,6 +102,14 @@ JOBS: tuple[Job, ...] = (
         run=lambda pool, s: ensure_partitions(pool, s.partition_months_ahead),
         trigger=lambda s: CronTrigger(
             hour=s.partition_hour, minute=10, timezone=s.timezone
+        ),
+    ),
+    Job(
+        name="login-attempts",
+        summary="delete sign-in attempts older than a day",
+        run=lambda pool, s: prune_login_attempts(pool, timedelta(days=1)),
+        trigger=lambda s: CronTrigger(
+            hour=s.partition_hour, minute=30, timezone=s.timezone
         ),
     ),
     Job(

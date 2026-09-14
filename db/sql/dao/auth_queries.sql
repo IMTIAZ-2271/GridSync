@@ -372,3 +372,63 @@ FROM worker_profile w
 LEFT JOIN distribution_company dc
        ON dc.company_id = w.distribution_company_id
 WHERE w.account_id = $1;
+
+
+-- ---------------------------------------------------------------------------
+-- Sign-in limits (services/api/login_limits.py, migration e5b7a3c19d42)
+-- ---------------------------------------------------------------------------
+
+-- name: login_attempt_begin
+-- Written before the password is checked, pessimistically as a failure, so
+-- concurrent guesses count each other.
+INSERT INTO login_attempt (email, client_ip)
+VALUES ($1::citext, $2::inet)
+RETURNING attempt_id, attempted_at;
+
+
+-- name: login_failures
+-- Failures that count against this attempt, excluding the attempt itself.
+-- $1 email, $2 client ip (NULL skips the address count), $3 window, $4 the
+-- attempt's own id. Per email, the window starts no earlier than that email's
+-- last success or the account's sessions_valid_after (an admin reset).
+-- `oldest` is the earliest counted failure: when it ages out, the lock lifts.
+WITH me AS (
+    SELECT attempted_at FROM login_attempt WHERE attempt_id = $4
+),
+email_since AS (
+    SELECT greatest(
+        (SELECT attempted_at FROM me) - $3::interval,
+        (SELECT max(la.attempted_at) FROM login_attempt la
+          WHERE la.email = $1::citext AND la.outcome = 'succeeded'),
+        (SELECT a.sessions_valid_after FROM account a WHERE a.email = $1::citext)
+    ) AS since
+)
+SELECT
+    (SELECT count(*) FROM login_attempt la, email_since s
+      WHERE la.email = $1::citext AND la.outcome = 'failed'
+        AND la.attempt_id <> $4 AND la.attempted_at > s.since)        AS email_failures,
+    (SELECT min(la.attempted_at) FROM login_attempt la, email_since s
+      WHERE la.email = $1::citext AND la.outcome = 'failed'
+        AND la.attempt_id <> $4 AND la.attempted_at > s.since)        AS email_oldest,
+    (SELECT count(*) FROM login_attempt la, me
+      WHERE $2::inet IS NOT NULL AND la.client_ip = $2::inet
+        AND la.outcome = 'failed' AND la.attempt_id <> $4
+        AND la.attempted_at > me.attempted_at - $3::interval)         AS ip_failures,
+    (SELECT min(la.attempted_at) FROM login_attempt la, me
+      WHERE $2::inet IS NOT NULL AND la.client_ip = $2::inet
+        AND la.outcome = 'failed' AND la.attempt_id <> $4
+        AND la.attempted_at > me.attempted_at - $3::interval)         AS ip_oldest;
+
+
+-- name: login_attempt_finish
+UPDATE login_attempt SET outcome = $2 WHERE attempt_id = $1;
+
+
+-- name: prune_login_attempts
+-- Only the last WINDOW is ever read; a day keeps enough to look at by hand.
+WITH gone AS (
+    DELETE FROM login_attempt
+    WHERE attempted_at < clock_timestamp() - $1::interval
+    RETURNING 1
+)
+SELECT count(*) FROM gone;
