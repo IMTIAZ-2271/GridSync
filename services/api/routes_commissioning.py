@@ -38,6 +38,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, computed_field
 
+from . import audit
 from .auth import Principal, require_role
 from .commissioning import (
     cancel_commissioning,
@@ -154,6 +155,9 @@ async def retry_commissioning(
     not_found = HTTPException(status_code=404, detail="meter not found")
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "device.commissioning_retry", "device", device_id, None
+        )
         meter = await conn.fetchrow(sql("meter_for_retry"), device_id)
         if meter is None or (district is not None and meter["district"] != district):
             raise not_found

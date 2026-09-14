@@ -852,6 +852,16 @@ export interface AdminAccountPage {
   total: number;
 }
 
+export interface AdminConnection {
+  point_id: string;
+  label: string;
+  reference: string | null;
+  meter_serial: string | null;
+  /** Running credit balance: the connection's newest ledger entry. */
+  balance_kwh: Decimal;
+  balance_amount: Decimal;
+}
+
 export interface AdminAccountDetail extends AdminAccount {
   sites: {
     site_id: string;
@@ -859,7 +869,29 @@ export interface AdminAccountDetail extends AdminAccount {
     district: string;
     status: string;
     connection_count: number;
+    connections: AdminConnection[];
   }[];
+}
+
+export interface LedgerEntry {
+  entry_id: number;
+  entry_type: "earned" | "applied" | "expired" | "adjustment" | "cashout";
+  kwh_delta: Decimal;
+  amount_delta: Decimal;
+  balance_kwh_after: Decimal;
+  balance_amount_after: Decimal;
+  period_id: string | null;
+  bill_id: string | null;
+  expires_on: DateOnly | null;
+  note: string | null;
+  created_at: Timestamp;
+}
+
+export interface PointLedger {
+  billing_point_id: string;
+  balance_kwh: Decimal;
+  balance_amount: Decimal;
+  entries: LedgerEntry[];
 }
 
 export interface AuditEntry {
@@ -1887,6 +1919,24 @@ export const api = {
   adminAudit: (query: AdminAuditQuery) =>
     request<AuditPage>(`/admin/audit${queryString(query)}`),
   adminTables: () => request<BrowseTable[]>("/admin/tables"),
+  adminPointLedger: (pointId: string) =>
+    request<PointLedger>(`/admin/billing-points/${pointId}/ledger`),
+  adminAdjustCredit: (
+    pointId: string,
+    body: { kwh_delta: string; amount_delta: string; reason: string },
+  ) =>
+    request<{ entry_id: number; balance_kwh: Decimal; balance_amount: Decimal }>(
+      `/admin/billing-points/${pointId}/credit-adjustments`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  adminInterveneWorkOrder: (
+    orderId: string,
+    body: { action: "release" | "cancel"; reason: string },
+  ) =>
+    request<{ order_id: string; status: WorkOrderStatus; released: string[] }>(
+      `/admin/work-orders/${orderId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
   adminTableRows: (table: string, query: BrowseQuery) =>
     request<BrowsePage>(
       `/admin/tables/${encodeURIComponent(table)}/rows${queryString(query)}`,
@@ -1996,6 +2046,7 @@ export const queryKeys = {
   adminAccount: (accountId: string) => ["admin", "account", accountId] as const,
   adminAudit: (query: AdminAuditQuery) => ["admin", "audit", query] as const,
   adminTables: () => ["admin", "tables"] as const,
+  adminPointLedger: (pointId: string) => ["admin", "ledger", pointId] as const,
   adminTableRows: (table: string, query: BrowseQuery) =>
     ["admin", "tables", table, query] as const,
   commissioning: () => ["commissioning"] as const,

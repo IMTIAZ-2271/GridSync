@@ -43,6 +43,7 @@ from . import audit
 from .auth import Principal, hash_password, require_role
 from .db import Conn
 from .queries import sql
+from .types import Energy, Money
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -82,12 +83,23 @@ class AccountPage(BaseModel):
     total: int
 
 
+class AccountConnection(BaseModel):
+    point_id: UUID
+    label: str
+    reference: str | None
+    meter_serial: str | None
+    #: The connection's running credit balance (its newest ledger entry).
+    balance_kwh: Energy
+    balance_amount: Money
+
+
 class AccountSite(BaseModel):
     site_id: UUID
     label: str
     district: str
     status: str
     connection_count: int
+    connections: list[AccountConnection]
 
 
 class AccountDetail(AccountRow):
@@ -241,9 +253,14 @@ async def list_accounts(
 async def account_detail(conn: Conn, _: Admin, account_id: UUID) -> AccountDetail:
     row = await _account_or_404(conn, account_id)
     sites = await conn.fetch(sql("admin_account_sites"), account_id)
+    by_site: dict[UUID, list[AccountConnection]] = {}
+    for c in await conn.fetch(sql("admin_account_connections"), account_id):
+        by_site.setdefault(c["site_id"], []).append(
+            AccountConnection(**{k: c[k] for k in AccountConnection.model_fields})
+        )
     return AccountDetail(
         **_row(row).model_dump(),
-        sites=[AccountSite(**dict(s)) for s in sites],
+        sites=[AccountSite(**dict(s), connections=by_site.get(s["site_id"], [])) for s in sites],
     )
 
 

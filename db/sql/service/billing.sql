@@ -118,9 +118,16 @@ BEGIN
     -- The tariff plan is still the site's: a household is on one tariff
     -- whether it has one connection or four.
     -- -----------------------------------------------------------------
+    -- FOR UPDATE: serializes this run against a credit adjustment on the same
+    -- connection. The admin adjustment touches this row with a no-op UPDATE
+    -- (db/sql/dao/admin_queries.sql, admin_lock_billing_point), so under
+    -- REPEATABLE READ an adjustment committed after this run's snapshot makes
+    -- this lock fail with a serialization error and the caller retries --
+    -- rather than the opening balance below silently missing it.
     SELECT bp.site_id INTO v_site_id
     FROM billing_point bp
-    WHERE bp.point_id = p_point_id;
+    WHERE bp.point_id = p_point_id
+    FOR UPDATE;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'billing point % does not exist', p_point_id

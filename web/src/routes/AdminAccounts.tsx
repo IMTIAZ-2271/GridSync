@@ -12,6 +12,7 @@ import {
 } from "../lib/api";
 import { ROLE_LABEL, useAuth } from "../auth/AuthContext";
 import { ACCOUNT_STATUS, formatWhen } from "../lib/admin";
+import AdminConnections from "../components/AdminConnections";
 import AuditList from "../components/AuditList";
 import Pager from "../components/Pager";
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Skeleton } from "../components/ui";
@@ -366,6 +367,8 @@ function AccountDetail({
             : account.sites.map((s) => `${s.label} (${s.district})`).join(", ")}
         </dd>
       </dl>
+
+      <AdminConnections account={account} />
 
       <div className="border-t border-hairline px-5 py-4">
         <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">Actions</p>

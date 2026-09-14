@@ -109,6 +109,8 @@ export const PORTALS: Portal[] = [
       { path: "", label: "Overview" },
       { path: "accounts", label: "Accounts" },
       { path: "data", label: "Data" },
+      { path: "work-orders", label: "Work orders" },
+      { path: "approvals", label: "Approvals" },
       { path: "audit", label: "Audit log" },
     ],
   },

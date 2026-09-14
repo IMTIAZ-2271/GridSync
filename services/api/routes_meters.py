@@ -35,6 +35,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from . import audit
 from .auth import Principal, require_role, visible_site_or_404
 from .db import Conn
 from .notify import notify
@@ -395,6 +396,9 @@ async def decide_meter_application(
     notes = (payload.decision_notes or "").strip() or None
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "meter_application.decision", "meter_application", application_id, payload
+        )
         decided = await conn.fetchrow(
             sql("decide_meter_application"),
             application_id, payload.status, notes,
@@ -551,6 +555,9 @@ async def raise_meter_work_order(
         )
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "meter_application.work_order", "meter_application", application_id, payload
+        )
         try:
             order = await conn.fetchrow(
                 sql("raise_application_work_order"),
@@ -627,6 +634,9 @@ async def register_applied_meter(
     notes = (payload.notes or "").strip() or None if payload else None
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "meter_application.register", "meter_application", application_id, payload
+        )
         company_id = await conn.fetchval(sql("utility_for_site"), row["site_id"])
         try:
             issued = await conn.fetchrow(

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../auth/AuthContext";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -56,6 +57,8 @@ import {
  * is not something an applicant can act on.
  */
 export default function GovernmentSupplierRegistrations() {
+  // An admin sees every district's queue (the API is unscoped for them).
+  const { account } = useAuth();
   // Marks this list seen on open and hands back the watermark it replaced, so
   // rows that arrived since the last visit are lit for exactly this render.
   const watermark = useMarkViewSeen(VIEWS.governmentSupplierRegistrations);
@@ -110,7 +113,7 @@ export default function GovernmentSupplierRegistrations() {
     <Card>
       <CardHeader
         title="Supplier approvals"
-        subtitle="Installer staff awaiting a decision in your district"
+        subtitle={`Installer staff awaiting a decision ${account?.role === "admin" ? "in every district" : "in your district"}`}
         action={
           pending.data ? (
             <Badge tone={pending.data.length > 0 ? "warning" : "good"}>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../auth/AuthContext";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, api, queryKeys, type PendingWorker } from "../lib/api";
@@ -48,6 +49,8 @@ import {
  * answer -- "rejected" alone does not tell an applicant what to fix.
  */
 export default function GovernmentWorkers() {
+  // An admin sees every district's queue (the API is unscoped for them).
+  const { account } = useAuth();
   // Marks this list seen on open and hands back the watermark it
   // replaced, so rows that arrived since the last visit are lit for
   // exactly this render and normal on the next load.
@@ -93,7 +96,7 @@ export default function GovernmentWorkers() {
     <Card>
       <CardHeader
         title="Worker approvals"
-        subtitle="Field workers awaiting a decision in your district"
+        subtitle={`Field workers awaiting a decision ${account?.role === "admin" ? "in every district" : "in your district"}`}
         action={
           pending.data ? (
             <Badge tone={pending.data.length > 0 ? "warning" : "good"}>

@@ -266,3 +266,135 @@ WHERE n.nspname = 'public'
   AND a.attnum > 0
   AND NOT a.attisdropped
 ORDER BY c.relname, a.attnum;
+
+
+-- ---------------------------------------------------------------------------
+-- Cross-system actions (services/api/routes_admin_actions.py).
+-- ---------------------------------------------------------------------------
+
+
+-- name: admin_account_connections
+-- Every billing point on an account's sites, with its billing meter and its
+-- credit balance -- the newest ledger entry's running total, as run_billing
+-- reads it. Zero for a connection that has never had a ledger entry.
+SELECT bp.point_id,
+       bp.site_id,
+       bp.label,
+       bp.reference,
+       (SELECT d.serial_no
+        FROM meter_spec ms JOIN device d ON d.device_id = ms.device_id
+        WHERE ms.billing_point_id = bp.point_id
+          AND ms.billing_role = 'billing' AND d.removed_at IS NULL
+        LIMIT 1)                                              AS meter_serial,
+       COALESCE(last.balance_kwh_after, 0)::numeric(12,4)     AS balance_kwh,
+       COALESCE(last.balance_amount_after, 0)::numeric(14,4)  AS balance_amount
+FROM billing_point bp
+JOIN site s ON s.site_id = bp.site_id
+LEFT JOIN LATERAL (
+    SELECT cl.balance_kwh_after, cl.balance_amount_after
+    FROM credit_ledger cl
+    WHERE cl.billing_point_id = bp.point_id
+    ORDER BY cl.entry_id DESC
+    LIMIT 1
+) last ON true
+WHERE s.account_id = $1
+ORDER BY bp.site_id, bp.created_at, bp.label;
+
+
+-- name: admin_lock_billing_point
+-- Serialize a ledger write against run_billing for this connection.
+--
+-- A deliberate no-op UPDATE, not SELECT ... FOR UPDATE, and the difference is
+-- the point. run_billing runs under REPEATABLE READ and locks this row FOR
+-- UPDATE before reading the latest balance (db/sql/service/billing.sql). If
+-- this adjustment commits while a billing run is already under way, a mere
+-- lock would let that run read its older snapshot and write a closing balance
+-- that silently drops the adjustment. An UPDATE creates a new row version, so
+-- the billing run's FOR UPDATE fails with a serialization error instead, and
+-- run_billing_with_retry starts it again on a snapshot that includes this.
+-- The other order needs nothing: this statement waits for the billing run to
+-- commit, and the balance read that follows it sees the run's entries.
+UPDATE billing_point
+SET label = label
+WHERE point_id = $1
+RETURNING point_id, site_id;
+
+
+-- name: admin_point_balance
+SELECT COALESCE(
+           (SELECT cl.balance_kwh_after FROM credit_ledger cl
+            WHERE cl.billing_point_id = $1 ORDER BY cl.entry_id DESC LIMIT 1), 0
+       )::numeric(12,4) AS balance_kwh,
+       COALESCE(
+           (SELECT cl.balance_amount_after FROM credit_ledger cl
+            WHERE cl.billing_point_id = $1 ORDER BY cl.entry_id DESC LIMIT 1), 0
+       )::numeric(14,4) AS balance_amount;
+
+
+-- name: admin_insert_credit_adjustment
+-- Rule 1's way of changing credit: a new row. period_id and bill_id stay NULL --
+-- an adjustment belongs to no billing month -- which also keeps it clear of
+-- ledger_one_entry_per_period (earned/applied only).
+INSERT INTO credit_ledger (
+    billing_point_id, site_id, entry_type, kwh_delta, amount_delta,
+    balance_kwh_after, balance_amount_after, note
+)
+VALUES ($1, $2, 'adjustment', $3, $4, $5, $6, $7)
+RETURNING entry_id, created_at;
+
+
+-- name: admin_point_ledger
+-- A connection's ledger, newest first.
+SELECT cl.entry_id,
+       cl.entry_type::text AS entry_type,
+       cl.kwh_delta,
+       cl.amount_delta,
+       cl.balance_kwh_after,
+       cl.balance_amount_after,
+       cl.period_id,
+       cl.bill_id,
+       cl.expires_on,
+       cl.note,
+       cl.created_at
+FROM credit_ledger cl
+WHERE cl.billing_point_id = $1
+ORDER BY cl.entry_id DESC
+LIMIT $2;
+
+
+-- name: admin_work_order_for_update
+-- The order an admin is about to intervene on, locked, with who to tell.
+SELECT w.order_id,
+       w.status::text           AS status,
+       w.order_type::text       AS order_type,
+       w.site_id,
+       w.created_by_account_id,
+       s.label                  AS site_label
+FROM work_order w
+JOIN site s ON s.site_id = w.site_id
+WHERE w.order_id = $1
+FOR UPDATE OF w;
+
+
+-- name: admin_release_assignments
+-- End every live assignment on an order. 'released' is the status a dispatcher
+-- taking someone off a job already means; both deadlines are cleared so the
+-- sweeps cannot act on a dead row.
+UPDATE work_order_assignment
+SET status            = 'released',
+    released_at       = now(),
+    offer_expires_at  = NULL,
+    start_deadline_at = NULL
+WHERE order_id = $1
+  AND status IN ('offered', 'accepted')
+RETURNING account_id, job_role::text AS job_role;
+
+
+-- name: admin_set_work_order_status
+-- $3 is the status the admin saw; the order was locked above, so this is
+-- belt and braces rather than the only guard.
+UPDATE work_order
+SET status = $2::work_order_status
+WHERE order_id = $1
+  AND status = $3::work_order_status
+RETURNING order_id, status::text AS status;

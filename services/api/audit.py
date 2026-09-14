@@ -57,3 +57,37 @@ async def record(
         None if after is None else json.dumps(after, default=str, sort_keys=True),
         _client_ip(request),
     )
+
+
+async def admin_action(
+    conn: asyncpg.Connection,
+    principal: Any,
+    action: str,
+    entity_type: str,
+    entity_id: str | UUID | None,
+    detail: Any = None,
+) -> None:
+    """Record an admin's use of a route officials and dispatchers share.
+
+    Many routes accepted `admin` long before the admin panel existed -- approving
+    a registration, ordering a visit, dispatching it -- and wrote nothing when
+    an admin called them. Call this as the first statement inside the route's
+    own transaction: it records only when the caller is an admin, and a refusal
+    later in the route rolls the row back with everything else, so the trail
+    holds only actions that happened.
+
+    `detail` is the request body (a pydantic model or dict). No client IP: these
+    routes do not take the request, and the actor and reason are what matter.
+    """
+    if getattr(principal, "role", None) != "admin":
+        return
+    if detail is not None and hasattr(detail, "model_dump"):
+        detail = detail.model_dump(mode="json")
+    await record(
+        conn,
+        actor_account_id=principal.account_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        after=detail,
+    )

@@ -11,6 +11,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from . import audit
 from .auth import Principal, require_role
 from .db import Conn
 from .notify import notify, notify_site_owner
@@ -139,6 +140,9 @@ async def update_work_order_status(
     # The UPDATE and the read-back are one transaction so the response cannot
     # show a state some concurrent writer produced in between.
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "work_order.status", "work_order", order_id, payload
+        )
         if principal.role == "worker":
             assigned = await conn.fetchval(
                 sql("worker_assigned_to_order"), order_id, principal.account_id
@@ -483,6 +487,9 @@ async def offer_assignment(
     as worker requirement 3.
     """
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "work_order.offer", "work_order", order_id, payload
+        )
         order = await conn.fetchrow(sql("get_work_order"), order_id)
         if order is None:
             raise HTTPException(status_code=404, detail="work order not found")
@@ -748,6 +755,9 @@ async def create_work_order(
         )
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "work_order.create", "work_order", None, payload
+        )
         if payload.issue_id is not None:
             issue = await conn.fetchrow(sql("get_issue"), payload.issue_id)
             if issue is None:
