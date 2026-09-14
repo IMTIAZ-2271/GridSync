@@ -33,7 +33,7 @@ export default function Layout() {
           </span>
 
           {available.length > 1 && (
-            <nav className="flex gap-1" aria-label="Portal">
+            <nav className="flex flex-wrap gap-1" aria-label="Portal">
               {available.map((portal) => (
                 <NavLink
                   key={portal.id}

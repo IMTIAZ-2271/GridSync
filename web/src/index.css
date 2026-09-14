@@ -62,6 +62,9 @@
   --color-portal-worker: #eb6834;
   --color-portal-government: #1baf7a;
   --color-portal-supplier: #4a3aa7;
+  /* Admin: slate, deliberately not a fifth hue competing with the four
+     audiences -- it is not an audience, it is the operator. */
+  --color-portal-admin: #334155;
 }
 
 html,

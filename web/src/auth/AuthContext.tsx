@@ -38,7 +38,7 @@ export const HOME_FOR_ROLE: Record<Role, string> = {
   worker: "/worker",
   government: "/government",
   supplier: "/supplier",
-  admin: "/supplier",
+  admin: "/admin",
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {

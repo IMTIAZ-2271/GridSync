@@ -41,6 +41,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .db import create_pool
 
+from .routes_admin_accounts import router as admin_accounts_router
 from .routes_agreements import router as agreements_router
 from .routes_analytics import router as analytics_router
 from .routes_applications import router as applications_router
@@ -114,6 +115,7 @@ app.include_router(orgs_router)
 app.include_router(sites_router)
 app.include_router(devices_router)
 app.include_router(commissioning_router)
+app.include_router(admin_accounts_router)
 app.include_router(inverters_router)
 app.include_router(meters_router)
 app.include_router(issues_router)

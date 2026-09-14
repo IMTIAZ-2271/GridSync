@@ -824,6 +824,105 @@ export type AgreementDecision = "active" | "terminated";
  */
 export type Role = "consumer" | "worker" | "government" | "supplier" | "admin";
 
+// ---------------------------------------------------------------------------
+// Admin panel (services/api/routes_admin_accounts.py). Admin only.
+// ---------------------------------------------------------------------------
+
+export type AccountStatus = "active" | "suspended" | "closed";
+
+export interface AdminAccount {
+  account_id: string;
+  email: string;
+  full_name: string;
+  phone: string | null;
+  national_id: string | null;
+  role: Role;
+  status: AccountStatus;
+  created_at: Timestamp;
+  /** Tokens issued before this are refused. Null: no admin has ended them. */
+  sessions_valid_after: Timestamp | null;
+  /** The district the account's role carries; null for a household or admin. */
+  district: string | null;
+  approval_status: ApprovalStatus | null;
+  site_count: number;
+}
+
+export interface AdminAccountPage {
+  items: AdminAccount[];
+  total: number;
+}
+
+export interface AdminAccountDetail extends AdminAccount {
+  sites: {
+    site_id: string;
+    label: string;
+    district: string;
+    status: string;
+    connection_count: number;
+  }[];
+}
+
+export interface AuditEntry {
+  audit_id: number;
+  occurred_at: Timestamp;
+  actor_account_id: string | null;
+  actor_email: string | null;
+  actor_name: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  /** A readable name for the entity -- the email, for an account. */
+  entity_label: string | null;
+  /** JSON text exactly as stored. */
+  before_state: string | null;
+  after_state: string | null;
+  client_ip: string | null;
+}
+
+export interface AuditPage {
+  items: AuditEntry[];
+  total: number;
+}
+
+export interface AdminOverview {
+  accounts_by_role: Partial<Record<Role, number>>;
+  accounts_by_status: Partial<Record<AccountStatus, number>>;
+  pending_workers: number;
+  pending_suppliers: number;
+  open_meter_applications: number;
+  pending_agreements: number;
+  recent_audit: AuditEntry[];
+}
+
+export interface AdminAccountQuery {
+  q?: string;
+  role?: Role;
+  status?: AccountStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AdminAuditQuery {
+  actor?: string;
+  entity_type?: string;
+  entity_id?: string;
+  action?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** Drops empty values so the API sees absent filters as absent. */
+function queryString(params: object): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      search.set(key, String(value));
+    }
+  }
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
 export type WorkerKind = "government" | "private";
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -1718,6 +1817,35 @@ export const api = {
   /** Every reporting device in the fleet. Government and supplier only. */
   fleetDevices: () => request<SiteDevice[]>("/devices"),
 
+  // -- admin --------------------------------------------------------------
+  adminOverview: () => request<AdminOverview>("/admin/overview"),
+  adminAccounts: (query: AdminAccountQuery) =>
+    request<AdminAccountPage>(`/admin/accounts${queryString(query)}`),
+  adminAccount: (accountId: string) =>
+    request<AdminAccountDetail>(`/admin/accounts/${accountId}`),
+  adminSetStatus: (accountId: string, body: { status: AccountStatus; reason: string }) =>
+    request<AdminAccount>(`/admin/accounts/${accountId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminRevokeSessions: (accountId: string, body: { reason: string }) =>
+    request<{ account_id: string; sessions_valid_after: Timestamp }>(
+      `/admin/accounts/${accountId}/sessions/revoke`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  adminResetPassword: (accountId: string, body: { password: string; reason: string }) =>
+    request<AdminAccount>(`/admin/accounts/${accountId}/password`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminSetAdmin: (accountId: string, body: { granted: boolean; reason: string }) =>
+    request<AdminAccount>(`/admin/accounts/${accountId}/admin`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  adminAudit: (query: AdminAuditQuery) =>
+    request<AuditPage>(`/admin/audit${queryString(query)}`),
+
   /** Every live billing meter and its connection to its utility's network.
    *  Officials see their district; suppliers the fleet. */
   commissioning: () => request<CommissioningOverview>("/commissioning"),
@@ -1817,6 +1945,10 @@ export const queryKeys = {
   consumptionLimit: (id: string) =>
     ["sites", id, "consumption-limit"] as const,
   fleetDevices: () => ["devices"] as const,
+  adminOverview: () => ["admin", "overview"] as const,
+  adminAccounts: (query: AdminAccountQuery) => ["admin", "accounts", query] as const,
+  adminAccount: (accountId: string) => ["admin", "account", accountId] as const,
+  adminAudit: (query: AdminAuditQuery) => ["admin", "audit", query] as const,
   commissioning: () => ["commissioning"] as const,
   issues: () => ["issues"] as const,
   issueTargets: (siteId: string) =>

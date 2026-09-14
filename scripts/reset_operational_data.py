@@ -83,9 +83,11 @@ TABLES: tuple[str, ...] = (
     "audit_log",
 )
 
-#: The append-only tables whose `forbid_mutation()` trigger has to stand down.
+#: The append-only tables whose `*_immutable` trigger has to stand down.
 #: `tariff_rate` has one too and is deliberately absent -- it is kept.
-IMMUTABLE = ("bill", "bill_line_item", "credit_ledger")
+#: `audit_log` joined in migration a7c3e9f15b20: a reset still empties the
+#: trail, because every row in it describes operational data this deletes.
+IMMUTABLE = ("bill", "bill_line_item", "credit_ledger", "audit_log")
 
 #: Rule 7's deferred constraint triggers, which also have to stand down --
 #: (table, trigger).
