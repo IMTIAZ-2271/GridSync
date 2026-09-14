@@ -23,6 +23,13 @@ type `adjustment` whose running balance continues the connection's own. Never
 below zero: a negative credit balance would be a debt, and a debt is a bill.
 The write is serialized against `run_billing` -- see `admin_lock_billing_point`.
 
+**Bill reissue** -- `POST /api/admin/bills/{id}/reissue`: `rebill_period()`
+(db/sql/service/billing.sql) voids the bill and issues a corrected replacement
+for the same month in one REPEATABLE READ transaction, retried on 40001 like
+run_billing. Its guards come back as SQLSTATEs: 55000 (latest bill only, not
+void, no payments, same owner, same meter) is 409; 23514 (rule 8 coverage, or no
+billing meter) is 422; P0002 is 404. The household is told, with both figures.
+
 Notifications use the `announcement` kind: `notification_kind` has no value for
 an admin intervention, and adding one is an irreversible enum change this phase
 does not need.
@@ -34,6 +41,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 
@@ -262,3 +270,133 @@ async def point_ledger(
         balance_amount=balance["balance_amount"],
         entries=[LedgerEntry(**dict(r)) for r in rows],
     )
+
+
+# --------------------------------------------------------------------------
+# Bills
+# --------------------------------------------------------------------------
+
+class BillRow(BaseModel):
+    bill_id: UUID
+    period_start: date
+    period_end: date
+    status: str
+    amount_due: Money
+    gross_amount: Money
+    issued_at: datetime
+    voided_by_bill_id: UUID | None
+    #: Offered a reissue: not void, the connection's latest, no payments.
+    reissuable: bool
+
+
+class ReissueIn(Reasoned):
+    #: Bill the connection's unresolved late readings for that month too.
+    merge_late_readings: bool = False
+
+
+class ReissueOut(BaseModel):
+    voided_bill_id: UUID
+    bill_id: UUID
+    period_start: date
+    previous_amount_due: Money
+    amount_due: Money
+    #: Charges before credit. On a solar connection whose credit covers the
+    #: bill, the amount due stays 0.00 while these (and the credit used) move.
+    previous_gross_amount: Money
+    gross_amount: Money
+    previous_credit_applied_kwh: Energy
+    credit_applied_kwh: Energy
+
+
+REISSUE_ATTEMPTS = 3
+
+
+@router.get("/billing-points/{point_id}/bills", response_model=list[BillRow])
+async def point_bills(conn: Conn, _: Admin, point_id: UUID) -> list[BillRow]:
+    exists = await conn.fetchval("SELECT 1 FROM billing_point WHERE point_id = $1", point_id)
+    if not exists:
+        raise HTTPException(status_code=404, detail="connection not found")
+    return [BillRow(**dict(r)) for r in await conn.fetch(sql("admin_point_bills"), point_id)]
+
+
+@router.post("/bills/{bill_id}/reissue", response_model=ReissueOut, status_code=201)
+async def reissue_bill(
+    conn: Conn, principal: Admin, bill_id: UUID, payload: ReissueIn, request: Request,
+) -> ReissueOut:
+    for attempt in range(REISSUE_ATTEMPTS):
+        # REPEATABLE READ like run_billing -- except inside an outer transaction
+        # (a test's), where no isolation level can be set and it is a savepoint.
+        transaction = (
+            conn.transaction() if conn.is_in_transaction()
+            else conn.transaction(isolation="repeatable_read")
+        )
+        try:
+            async with transaction:
+                before = await conn.fetchrow(sql("admin_bill_summary"), bill_id)
+                if before is None:
+                    raise HTTPException(status_code=404, detail="bill not found")
+                new_id = await conn.fetchval(
+                    "SELECT rebill_period($1, $2)", bill_id, payload.merge_late_readings
+                )
+                after = await conn.fetchrow(sql("admin_bill_summary"), new_id)
+                await audit.record(
+                    conn,
+                    actor_account_id=principal.account_id,
+                    action="bill.reissued",
+                    entity_type="bill",
+                    entity_id=bill_id,
+                    before={"bill_id": bill_id, "amount_due": before["amount_due"],
+                            "gross_amount": before["gross_amount"],
+                            "credit_applied_kwh": before["credit_applied_kwh"],
+                            "status": before["status"]},
+                    after={"bill_id": new_id, "amount_due": after["amount_due"],
+                           "gross_amount": after["gross_amount"],
+                           "credit_applied_kwh": after["credit_applied_kwh"],
+                           "merge_late_readings": payload.merge_late_readings,
+                           "reason": payload.reason},
+                    request=request,
+                )
+                month = before["period_start"].strftime("%B %Y")
+                await notify(
+                    conn, before["account_id"], "announcement",
+                    f"Your bill for {month} was corrected",
+                    # Charges AND amount due: where credit covers the bill the
+                    # amount due is 0.00 both times, and saying only that would
+                    # hide that more of the household's credit was used.
+                    body=(
+                        f"It was reissued. Charges: BDT {before['gross_amount']:.2f} → "
+                        f"BDT {after['gross_amount']:.2f}. Credit used: "
+                        f"{before['credit_applied_kwh']} → {after['credit_applied_kwh']} kWh. "
+                        f"Amount due: BDT {before['amount_due']:.2f} → "
+                        f"BDT {after['amount_due']:.2f}. {payload.reason}"
+                    ),
+                    severity="info",
+                    entity_type="bill",
+                    entity_id=str(new_id),
+                    dedupe_key=f"bill:{bill_id}:reissued",
+                )
+            return ReissueOut(
+                voided_bill_id=bill_id,
+                bill_id=new_id,
+                period_start=before["period_start"],
+                previous_amount_due=before["amount_due"],
+                amount_due=after["amount_due"],
+                previous_gross_amount=before["gross_amount"],
+                gross_amount=after["gross_amount"],
+                previous_credit_applied_kwh=before["credit_applied_kwh"],
+                credit_applied_kwh=after["credit_applied_kwh"],
+            )
+        except asyncpg.SerializationError:
+            if attempt == REISSUE_ATTEMPTS - 1:
+                raise HTTPException(
+                    status_code=409, detail="the connection is busy being billed; try again"
+                ) from None
+        except asyncpg.NoDataFoundError:
+            raise HTTPException(status_code=404, detail="bill not found") from None
+        except asyncpg.ObjectNotInPrerequisiteStateError as exc:
+            raise HTTPException(status_code=409, detail=exc.args[0]) from None
+        except asyncpg.CheckViolationError as exc:
+            raise HTTPException(
+                status_code=422, detail=f"the corrected bill was refused: {exc.args[0]}"
+            ) from None
+    raise AssertionError("unreachable")

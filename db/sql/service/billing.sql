@@ -106,7 +106,10 @@ BEGIN
 
     IF v_period_id IS NOT NULL AND v_status = 'billed' THEN
         -- Already done. Hand back the same bill; do not write anything.
-        SELECT bill_id INTO v_bill_id FROM bill WHERE period_id = v_period_id;
+        -- The live bill: since migration c8d4f2a61e37 a reissued period also
+        -- holds the void original beside it.
+        SELECT bill_id INTO v_bill_id FROM bill
+        WHERE period_id = v_period_id AND status <> 'void';
         RETURN v_bill_id;
     END IF;
 
@@ -430,9 +433,10 @@ BEGIN
     END IF;
 
     -- -----------------------------------------------------------------
-    -- 5b. Ledger. Append-only; ledger_one_entry_per_period makes a second
-    --     run for the same period impossible even if the guard above were
-    --     bypassed.
+    -- 5b. Ledger. Append-only; ledger_one_entry_per_bill makes a second
+    --     earned or applied entry for the same bill impossible even if the
+    --     guard above were bypassed. A reissued period's replacement bill posts
+    --     its own, after rebill_period has reversed the original's.
     -- -----------------------------------------------------------------
     IF v_total_export > 0 THEN
         INSERT INTO credit_ledger (
@@ -485,3 +489,159 @@ COMMENT ON FUNCTION run_billing(uuid, date) IS
 'Idempotent: a period already billed returns its existing bill_id '
 'unchanged. Refuses a period below 95% reading coverage (rule 8). Run under '
 'REPEATABLE READ or SERIALIZABLE and retry on 40001.';
+
+
+-- ===========================================================================
+--   rebill_period(p_bill_id uuid, p_merge_late boolean) RETURNS uuid
+--
+-- Correct an issued bill the only way rule 1 allows: void it and issue a
+-- replacement for the same month, in one transaction. Returns the new bill_id.
+--
+--   1. Guards. Refused (SQLSTATE 55000) when the bill is already void, when a
+--      LATER bill exists on the connection (its opening balance came from this
+--      one), when payments are recorded against it, when the site has changed
+--      hands since (run_billing snapshots the current owner -- rule 2), or when
+--      the billing meter was swapped after it was issued (run_billing reads the
+--      current meter only). Unknown bill: SQLSTATE P0002.
+--   2. Reverse the original's `earned` and `applied` ledger entries with
+--      `adjustment` entries, so its credit is back where it was before it ran.
+--   3. Optionally merge the connection's unresolved late readings for that
+--      month into device_reading (ON CONFLICT DO NOTHING) and mark them resolved.
+--   4. Reopen the period to `frozen`, defer `bill_one_live_per_period`, and call
+--      run_billing -- the same computation, the same rule 8 gate. A correction
+--      that leaves the month below coverage raises, and all of the above rolls
+--      back.
+--   5. Void the original, pointing at the replacement; re-check the constraint.
+--
+-- Run under REPEATABLE READ with retry on 40001, like run_billing.
+-- ===========================================================================
+
+CREATE OR REPLACE FUNCTION rebill_period(p_bill_id uuid, p_merge_late boolean)
+    RETURNS uuid
+    LANGUAGE plpgsql
+AS $fn$
+DECLARE
+    v_bill        bill%ROWTYPE;
+    v_period      billing_period%ROWTYPE;
+    v_meter_id    uuid;
+    v_installed   timestamptz;
+    v_owner       uuid;
+    v_new_bill_id uuid;
+    v_entry       record;
+    v_balance_kwh    numeric(12,4);
+    v_balance_amount numeric(14,4);
+    v_window_from timestamptz;
+    v_window_to   timestamptz;
+BEGIN
+    SELECT * INTO v_bill FROM bill WHERE bill_id = p_bill_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'bill % does not exist', p_bill_id USING ERRCODE = 'P0002';
+    END IF;
+    IF v_bill.status = 'void' THEN
+        RAISE EXCEPTION 'bill % is already void; reissue its replacement instead', p_bill_id
+            USING ERRCODE = '55000';
+    END IF;
+
+    SELECT * INTO v_period FROM billing_period WHERE period_id = v_bill.period_id FOR UPDATE;
+    -- The connection too: serializes against run_billing and a credit
+    -- adjustment on the same point (admin_lock_billing_point).
+    PERFORM 1 FROM billing_point WHERE point_id = v_bill.billing_point_id FOR UPDATE;
+
+    IF EXISTS (
+        SELECT 1 FROM bill b
+        JOIN billing_period bp ON bp.period_id = b.period_id
+        WHERE b.billing_point_id = v_bill.billing_point_id
+          AND b.status <> 'void'
+          AND bp.period_start > v_period.period_start
+    ) THEN
+        RAISE EXCEPTION 'a later bill exists on this connection; only its latest bill can be reissued'
+            USING ERRCODE = '55000';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM payment WHERE bill_id = p_bill_id) THEN
+        RAISE EXCEPTION 'payments are recorded against bill %; it cannot be reissued', p_bill_id
+            USING ERRCODE = '55000';
+    END IF;
+
+    SELECT account_id INTO v_owner FROM site WHERE site_id = v_bill.site_id;
+    IF v_owner IS DISTINCT FROM v_bill.account_id THEN
+        RAISE EXCEPTION 'the site has a different owner than when bill % was issued', p_bill_id
+            USING ERRCODE = '55000';
+    END IF;
+
+    SELECT d.device_id, d.installed_at INTO v_meter_id, v_installed
+    FROM meter_spec ms JOIN device d ON d.device_id = ms.device_id
+    WHERE ms.billing_point_id = v_bill.billing_point_id
+      AND ms.billing_role = 'billing' AND d.removed_at IS NULL;
+    IF v_meter_id IS NULL OR v_installed > v_bill.issued_at THEN
+        RAISE EXCEPTION 'the billing meter on this connection changed after bill % was issued', p_bill_id
+            USING ERRCODE = '55000';
+    END IF;
+
+    -- 2. Reverse the original's credit, continuing the running balance.
+    FOR v_entry IN
+        SELECT * FROM credit_ledger
+        WHERE bill_id = p_bill_id AND entry_type IN ('earned', 'applied')
+        ORDER BY entry_id
+    LOOP
+        SELECT balance_kwh_after, balance_amount_after
+          INTO v_balance_kwh, v_balance_amount
+        FROM credit_ledger WHERE billing_point_id = v_bill.billing_point_id
+        ORDER BY entry_id DESC LIMIT 1;
+
+        INSERT INTO credit_ledger (
+            billing_point_id, site_id, period_id, bill_id, entry_type,
+            kwh_delta, amount_delta, balance_kwh_after, balance_amount_after, note
+        )
+        VALUES (
+            v_entry.billing_point_id, v_entry.site_id, v_entry.period_id, p_bill_id, 'adjustment',
+            -v_entry.kwh_delta, -v_entry.amount_delta,
+            v_balance_kwh - v_entry.kwh_delta, v_balance_amount - v_entry.amount_delta,
+            format('Reversal of %s credit for voided bill %s', v_entry.entry_type,
+                   to_char(v_period.period_start, 'YYYY-MM'))
+        );
+    END LOOP;
+
+    -- 3. Late readings, if asked.
+    IF p_merge_late THEN
+        v_window_from := v_period.period_start::timestamp AT TIME ZONE 'Asia/Dhaka';
+        v_window_to   := (v_period.period_start + INTERVAL '1 month')::timestamp
+                             AT TIME ZONE 'Asia/Dhaka';
+        INSERT INTO device_reading (
+            device_id, interval_start, interval_minutes,
+            import_kwh, export_kwh, generation_kwh, source, quality, ingest_batch_id
+        )
+        SELECT lr.device_id, lr.interval_start, d.interval_minutes,
+               lr.import_kwh, lr.export_kwh, lr.generation_kwh, 'device', 'good', lr.ingest_batch_id
+        FROM late_reading lr JOIN device d ON d.device_id = lr.device_id
+        WHERE lr.device_id = v_meter_id
+          AND NOT lr.resolved
+          AND lr.interval_start >= v_window_from AND lr.interval_start < v_window_to
+        ON CONFLICT (device_id, interval_start) DO NOTHING;
+
+        UPDATE late_reading SET resolved = true
+        WHERE device_id = v_meter_id AND NOT resolved
+          AND interval_start >= v_window_from AND interval_start < v_window_to;
+    END IF;
+
+    -- 4. Reopen and rerun.
+    UPDATE billing_period SET status = 'frozen', billed_at = NULL
+    WHERE period_id = v_period.period_id;
+
+    SET CONSTRAINTS bill_one_live_per_period DEFERRED;
+    v_new_bill_id := run_billing(v_bill.billing_point_id, v_period.period_start);
+
+    -- 5. Void the original, pointing at its replacement.
+    UPDATE bill SET status = 'void', voided_by_bill_id = v_new_bill_id
+    WHERE bill_id = p_bill_id;
+    SET CONSTRAINTS bill_one_live_per_period IMMEDIATE;
+
+    RETURN v_new_bill_id;
+END;
+$fn$;
+
+COMMENT ON FUNCTION rebill_period(uuid, boolean) IS
+'Voids an issued bill and issues a corrected replacement for the same month, in '
+'one transaction: reverses its ledger credit, optionally merges late readings, '
+'reruns run_billing. Latest bill on a connection only. Run under REPEATABLE READ '
+'and retry on 40001.';

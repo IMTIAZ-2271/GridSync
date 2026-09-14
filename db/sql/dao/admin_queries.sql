@@ -334,7 +334,7 @@ SELECT COALESCE(
 -- name: admin_insert_credit_adjustment
 -- Rule 1's way of changing credit: a new row. period_id and bill_id stay NULL --
 -- an adjustment belongs to no billing month -- which also keeps it clear of
--- ledger_one_entry_per_period (earned/applied only).
+-- ledger_one_entry_per_bill (earned/applied only).
 INSERT INTO credit_ledger (
     billing_point_id, site_id, entry_type, kwh_delta, amount_delta,
     balance_kwh_after, balance_amount_after, note
@@ -398,3 +398,38 @@ SET status = $2::work_order_status
 WHERE order_id = $1
   AND status = $3::work_order_status
 RETURNING order_id, status::text AS status;
+
+
+-- name: admin_point_bills
+-- A connection's bills, newest month first, and whether each can be reissued
+-- right now: not void, no later live bill on the connection, no payments.
+-- (rebill_period re-checks all of this, plus the owner and meter guards, under
+-- lock -- this flag only decides whether to offer the button.)
+SELECT b.bill_id,
+       bp.period_start,
+       bp.period_end,
+       b.status::text      AS status,
+       b.amount_due,
+       b.gross_amount,
+       b.issued_at,
+       b.voided_by_bill_id,
+       (b.status <> 'void'
+        AND NOT EXISTS (
+            SELECT 1 FROM bill later
+            JOIN billing_period lp ON lp.period_id = later.period_id
+            WHERE later.billing_point_id = b.billing_point_id
+              AND later.status <> 'void'
+              AND lp.period_start > bp.period_start)
+        AND NOT EXISTS (SELECT 1 FROM payment p WHERE p.bill_id = b.bill_id)
+       )                    AS reissuable
+FROM bill b
+JOIN billing_period bp ON bp.period_id = b.period_id
+WHERE b.billing_point_id = $1
+ORDER BY bp.period_start DESC, b.issued_at DESC;
+
+
+-- name: admin_bill_summary
+SELECT b.bill_id, b.account_id, b.site_id, b.billing_point_id, b.amount_due, b.status::text AS status,
+       b.gross_amount, b.credit_applied_kwh, bp.period_start
+FROM bill b JOIN billing_period bp ON bp.period_id = b.period_id
+WHERE b.bill_id = $1;

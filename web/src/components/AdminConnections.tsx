@@ -42,7 +42,7 @@ function ConnectionItem({
   accountId: string;
 }) {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState<"adjust" | "ledger" | null>(null);
+  const [open, setOpen] = useState<"adjust" | "ledger" | "bills" | null>(null);
   const [kwh, setKwh] = useState("");
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
@@ -120,6 +120,14 @@ function ConnectionItem({
           className="rounded-md border border-hairline px-2.5 py-1 text-xs text-ink-2 hover:bg-plane"
         >
           {open === "ledger" ? "Hide ledger" : "Ledger"}
+        </button>
+        <button
+          type="button"
+          aria-pressed={open === "bills"}
+          onClick={() => setOpen(open === "bills" ? null : "bills")}
+          className="rounded-md border border-hairline px-2.5 py-1 text-xs text-ink-2 hover:bg-plane"
+        >
+          {open === "bills" ? "Hide bills" : "Bills"}
         </button>
       </div>
       {done && <p className="mt-2 text-xs text-status-good-text">{done}</p>}
@@ -216,6 +224,143 @@ function ConnectionItem({
           )}
         </div>
       )}
+
+      {open === "bills" && (
+        <ConnectionBills pointId={connection.point_id} accountId={accountId} />
+      )}
     </li>
+  );
+}
+
+/**
+ * The connection's bills, newest month first, with a reissue on the one bill
+ * that can take it: not void, the latest, no payments. A reissue voids that
+ * bill and issues a corrected replacement for the same month; the server
+ * re-checks every guard, and says which one refused.
+ */
+function ConnectionBills({ pointId, accountId }: { pointId: string; accountId: string }) {
+  const queryClient = useQueryClient();
+  const [reissuing, setReissuing] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const [mergeLate, setMergeLate] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+
+  const bills = useQuery({
+    queryKey: queryKeys.adminPointBills(pointId),
+    queryFn: () => api.adminPointBills(pointId),
+  });
+
+  const reissue = useMutation({
+    mutationFn: () =>
+      api.adminReissueBill(reissuing!, { reason: reason.trim(), merge_late_readings: mergeLate }),
+    onSuccess: (r) => {
+      setDone(
+        `Reissued. Charges ${formatMoney(r.previous_gross_amount)} → ${formatMoney(r.gross_amount)}; ` +
+          `credit used ${formatKwh(r.previous_credit_applied_kwh, 4)} → ${formatKwh(r.credit_applied_kwh, 4)} kWh; ` +
+          `amount due ${formatMoney(r.previous_amount_due)} → ${formatMoney(r.amount_due)}. The household has been told.`,
+      );
+      setReissuing(null);
+      setReason("");
+      setMergeLate(false);
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.adminPointBills(pointId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.adminPointLedger(pointId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.adminAccount(accountId) });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+    },
+  });
+  const failure =
+    reissue.error instanceof ApiError && typeof reissue.error.detail === "string"
+      ? reissue.error.detail
+      : reissue.error?.message;
+
+  if (bills.isPending) return <p className="mt-3 text-xs text-ink-muted">Loading…</p>;
+  if (bills.error) return <p className="mt-3 text-xs text-status-critical">{bills.error.message}</p>;
+  if (bills.data.length === 0) return <p className="mt-3 text-xs text-ink-muted">No bills yet.</p>;
+
+  return (
+    <div className="mt-3 space-y-2">
+      {done && <p className="text-xs text-status-good-text">{done}</p>}
+      <ul className="divide-y divide-hairline rounded-md border border-hairline">
+        {bills.data.map((b) => (
+          <li key={b.bill_id} className="px-3 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-ink">
+                {new Date(b.period_start + "T00:00:00").toLocaleDateString(undefined, {
+                  month: "long",
+                  year: "numeric",
+                })}
+                <span className="text-ink-muted">
+                  {" · "}charges {formatMoney(b.gross_amount)} · due {formatMoney(b.amount_due)}
+                </span>
+              </span>
+              <span className="flex items-center gap-2">
+                <span
+                  className={`rounded px-1.5 py-0.5 ${
+                    b.status === "void" ? "bg-hairline text-ink-muted" : "bg-status-good/12 text-status-good-text"
+                  }`}
+                >
+                  {b.status === "void" ? "void — replaced" : b.status}
+                </span>
+                {b.reissuable && (
+                  <button
+                    type="button"
+                    aria-pressed={reissuing === b.bill_id}
+                    onClick={() => {
+                      setReissuing(reissuing === b.bill_id ? null : b.bill_id);
+                      setDone(null);
+                      reissue.reset();
+                    }}
+                    className="rounded-md border border-hairline px-2 py-0.5 text-ink-2 hover:bg-plane"
+                  >
+                    Reissue
+                  </button>
+                )}
+              </span>
+            </div>
+            {reissuing === b.bill_id && (
+              <form
+                className="mt-2 space-y-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (reason.trim().length >= 3) reissue.mutate();
+                }}
+              >
+                <p className="text-xs text-ink-2">
+                  This bill is voided and a corrected one is issued for the same month from the
+                  readings and tariff as they are now. Its credit is reversed and applied again. The
+                  household is told. This cannot be undone.
+                </p>
+                <label className="flex items-center gap-1.5 text-xs text-ink-2">
+                  <input
+                    type="checkbox"
+                    checked={mergeLate}
+                    onChange={(e) => setMergeLate(e.target.checked)}
+                  />
+                  Include readings that arrived after the month was billed
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-ink-muted">
+                  Reason (sent to the household and kept in the audit log)
+                  <input
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    className="rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm text-ink"
+                  />
+                </label>
+                {failure && <p className="text-xs text-status-critical">{failure}</p>}
+                <button
+                  type="submit"
+                  disabled={reason.trim().length < 3 || reissue.isPending}
+                  className="rounded-lg bg-ink px-3 py-1.5 text-sm font-medium text-surface disabled:opacity-50"
+                >
+                  {reissue.isPending ? "Reissuing…" : "Void and reissue"}
+                </button>
+              </form>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

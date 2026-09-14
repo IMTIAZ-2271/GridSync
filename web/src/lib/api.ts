@@ -887,6 +887,31 @@ export interface LedgerEntry {
   created_at: Timestamp;
 }
 
+export interface AdminBill {
+  bill_id: string;
+  period_start: DateOnly;
+  period_end: DateOnly;
+  status: BillStatus;
+  amount_due: Decimal;
+  gross_amount: Decimal;
+  issued_at: Timestamp;
+  voided_by_bill_id: string | null;
+  /** Not void, the connection's latest bill, no payments. */
+  reissuable: boolean;
+}
+
+export interface BillReissue {
+  voided_bill_id: string;
+  bill_id: string;
+  period_start: DateOnly;
+  previous_amount_due: Decimal;
+  amount_due: Decimal;
+  previous_gross_amount: Decimal;
+  gross_amount: Decimal;
+  previous_credit_applied_kwh: Decimal;
+  credit_applied_kwh: Decimal;
+}
+
 export interface PointLedger {
   billing_point_id: string;
   balance_kwh: Decimal;
@@ -1921,6 +1946,13 @@ export const api = {
   adminTables: () => request<BrowseTable[]>("/admin/tables"),
   adminPointLedger: (pointId: string) =>
     request<PointLedger>(`/admin/billing-points/${pointId}/ledger`),
+  adminPointBills: (pointId: string) =>
+    request<AdminBill[]>(`/admin/billing-points/${pointId}/bills`),
+  adminReissueBill: (billId: string, body: { reason: string; merge_late_readings: boolean }) =>
+    request<BillReissue>(`/admin/bills/${billId}/reissue`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   adminAdjustCredit: (
     pointId: string,
     body: { kwh_delta: string; amount_delta: string; reason: string },
@@ -2047,6 +2079,7 @@ export const queryKeys = {
   adminAudit: (query: AdminAuditQuery) => ["admin", "audit", query] as const,
   adminTables: () => ["admin", "tables"] as const,
   adminPointLedger: (pointId: string) => ["admin", "ledger", pointId] as const,
+  adminPointBills: (pointId: string) => ["admin", "bills", pointId] as const,
   adminTableRows: (table: string, query: BrowseQuery) =>
     ["admin", "tables", table, query] as const,
   commissioning: () => ["commissioning"] as const,
