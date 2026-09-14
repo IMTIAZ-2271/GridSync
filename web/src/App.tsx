@@ -29,6 +29,7 @@ import SupplierEquipment from "./routes/SupplierEquipment";
 import AdminOverview from "./routes/AdminOverview";
 import AdminAccounts from "./routes/AdminAccounts";
 import AdminAudit from "./routes/AdminAudit";
+import AdminData from "./routes/AdminData";
 
 /**
  * The consumer portal lived at /customer until 2026-08-27. Redirect the whole
@@ -116,6 +117,7 @@ export default function App() {
           <Route path="admin">
             <Route index element={<AdminOverview />} />
             <Route path="accounts" element={<AdminAccounts />} />
+            <Route path="data" element={<AdminData />} />
             <Route path="audit" element={<AdminAudit />} />
           </Route>
         </Route>

@@ -102,12 +102,13 @@ export const PORTALS: Portal[] = [
   {
     id: "admin",
     label: "Admin",
-    blurb: "Every account and every change an admin made. Admins can also open the other four portals.",
+    blurb: "Every account, every table and every change an admin made. Admins can also open the other four portals.",
     accent: "bg-portal-admin",
     base: "/admin",
     routes: [
       { path: "", label: "Overview" },
       { path: "accounts", label: "Accounts" },
+      { path: "data", label: "Data" },
       { path: "audit", label: "Audit log" },
     ],
   },

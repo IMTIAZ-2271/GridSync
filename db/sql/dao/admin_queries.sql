@@ -212,3 +212,57 @@ FOR UPDATE;
 INSERT INTO account (email, password_hash, full_name, role)
 VALUES ($1::citext, $2, $3, 'admin')
 RETURNING account_id;
+
+
+-- ---------------------------------------------------------------------------
+-- Data browser (services/api/admin_browse.py). Catalog reads only: these
+-- describe what exists, and every identifier the browser later puts into SQL
+-- comes from `quote_ident` here -- never from the request.
+-- ---------------------------------------------------------------------------
+
+
+-- name: admin_browse_tables
+-- Every ordinary or partitioned table in public, excluding partitions (they
+-- are their parent, seen from inside). approx_rows is the planner's estimate --
+-- free to read, and NULL for a table never analysed; a partitioned table's is
+-- the sum of its partitions'.
+SELECT c.relname                      AS name,
+       quote_ident(c.relname)         AS quoted,
+       CASE c.relkind WHEN 'p' THEN 'partitioned' ELSE 'table' END AS kind,
+       CASE
+           WHEN c.relkind = 'p' THEN (
+               SELECT nullif(sum(greatest(child.reltuples, 0)), 0)::bigint
+               FROM pg_inherits i
+               JOIN pg_class child ON child.oid = i.inhrelid
+               WHERE i.inhparent = c.oid)
+           WHEN c.reltuples < 0 THEN NULL
+           ELSE c.reltuples::bigint
+       END                            AS approx_rows
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relkind IN ('r', 'p')
+  AND NOT c.relispartition
+ORDER BY c.relname;
+
+
+-- name: admin_browse_columns
+-- Every live column of every table above, in column order, with its type as
+-- PostgreSQL itself spells it (format_type) and whether it is in the primary key.
+SELECT c.relname                              AS table_name,
+       a.attname                              AS name,
+       quote_ident(a.attname)                 AS quoted,
+       format_type(a.atttypid, a.atttypmod)   AS type,
+       NOT a.attnotnull                       AS nullable,
+       COALESCE(a.attnum = ANY (pk.indkey), false) AS primary_key,
+       array_position(pk.indkey, a.attnum)    AS pk_position
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = c.oid
+LEFT JOIN pg_index pk ON pk.indrelid = c.oid AND pk.indisprimary
+WHERE n.nspname = 'public'
+  AND c.relkind IN ('r', 'p')
+  AND NOT c.relispartition
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+ORDER BY c.relname, a.attnum;

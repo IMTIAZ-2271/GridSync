@@ -894,6 +894,47 @@ export interface AdminOverview {
   recent_audit: AuditEntry[];
 }
 
+export interface BrowseColumn {
+  name: string;
+  /** The type as PostgreSQL spells it, e.g. "numeric(12,4)". */
+  type: string;
+  nullable: boolean;
+  primary_key: boolean;
+  /** A credential hash: never sent, always null in rows. */
+  masked: boolean;
+}
+
+export interface BrowseTable {
+  name: string;
+  kind: "table" | "partitioned";
+  /** Planner estimate; null for a table never analysed. */
+  approx_rows: number | null;
+  columns: BrowseColumn[];
+  /** Rows are served only when filtered on this column. */
+  required_filter: string | null;
+}
+
+/** A cell: NUMERIC, timestamps, UUIDs and big integers arrive as strings. */
+export type BrowseValue = string | number | boolean | null | BrowseValue[];
+
+export interface BrowsePage {
+  table: string;
+  columns: string[];
+  masked: string[];
+  rows: Record<string, BrowseValue>[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BrowseQuery {
+  limit?: number;
+  offset?: number;
+  filter_col?: string;
+  filter_val?: string;
+  descending?: boolean;
+}
+
 export interface AdminAccountQuery {
   q?: string;
   role?: Role;
@@ -1845,6 +1886,11 @@ export const api = {
     }),
   adminAudit: (query: AdminAuditQuery) =>
     request<AuditPage>(`/admin/audit${queryString(query)}`),
+  adminTables: () => request<BrowseTable[]>("/admin/tables"),
+  adminTableRows: (table: string, query: BrowseQuery) =>
+    request<BrowsePage>(
+      `/admin/tables/${encodeURIComponent(table)}/rows${queryString(query)}`,
+    ),
 
   /** Every live billing meter and its connection to its utility's network.
    *  Officials see their district; suppliers the fleet. */
@@ -1949,6 +1995,9 @@ export const queryKeys = {
   adminAccounts: (query: AdminAccountQuery) => ["admin", "accounts", query] as const,
   adminAccount: (accountId: string) => ["admin", "account", accountId] as const,
   adminAudit: (query: AdminAuditQuery) => ["admin", "audit", query] as const,
+  adminTables: () => ["admin", "tables"] as const,
+  adminTableRows: (table: string, query: BrowseQuery) =>
+    ["admin", "tables", table, query] as const,
   commissioning: () => ["commissioning"] as const,
   issues: () => ["issues"] as const,
   issueTargets: (siteId: string) =>

@@ -21,7 +21,9 @@ may not see is never fetched. See services/api/auth.py.
 
 **Raw SQL, no ORM.** Statements live in `db/sql/dao/*.sql` and are reached by
 name through `queries.sql()`. Handlers translate rows into response models and
-do nothing else -- no query construction in Python.
+do nothing else -- no query construction in Python. The one contained exception
+is `admin_browse.py`, the admin's read-only table browser, which builds a SELECT
+from catalog-quoted identifiers; its docstring says why and what keeps it safe.
 
 **Money and energy cross the wire as strings.** Postgres NUMERIC arrives as
 Decimal, and rule 5 forbids FLOAT for money and energy. Serializing a Decimal
@@ -41,6 +43,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .db import create_pool
 
+from .admin_browse import router as admin_browse_router
 from .routes_admin_accounts import router as admin_accounts_router
 from .routes_agreements import router as agreements_router
 from .routes_analytics import router as analytics_router
@@ -116,6 +119,7 @@ app.include_router(sites_router)
 app.include_router(devices_router)
 app.include_router(commissioning_router)
 app.include_router(admin_accounts_router)
+app.include_router(admin_browse_router)
 app.include_router(inverters_router)
 app.include_router(meters_router)
 app.include_router(issues_router)
