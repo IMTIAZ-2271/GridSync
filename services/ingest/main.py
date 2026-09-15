@@ -170,11 +170,12 @@ app = FastAPI(
 app.include_router(commissioning_router)
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health() -> dict[str, str]:
     """Liveness for a supervisor. Deliberately does not touch the database:
     this answers "is the process up", and a pool check would conflate that
-    with "is Postgres up"."""
+    with "is Postgres up". HEAD too, because uptime monitors (UptimeRobot's
+    free tier) probe with HEAD and would read a 405 as down."""
     return {"status": "ok"}
 
 
