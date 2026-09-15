@@ -1,31 +1,29 @@
-"""Run the hosted backend as ONE Render service: API, ingest, head-end, jobs.
+"""Start a hosted GridSync service on Render, in one of two shapes.
 
-    python -m scripts.render_start          # Render's start command
+    python -m scripts.render_start          # Render's start command, both shapes
 
-Render's free tier gives one always-on web service a month's worth of hours,
-so everything that must keep running shares this one:
+**`RUN_API=off` -- the device service** (its own Render service and link, kept
+awake by a pinger, standing in for the utilities' hardware):
 
-* **API** -- uvicorn on `$PORT`, in the foreground as far as Render is
-  concerned. If it exits, this script exits and Render restarts the service.
-* **ingest** -- on 127.0.0.1:8100. Nothing outside the container needs it: the
-  only thing that sends it readings is the head-end below, in the same
-  container.
-* **head-end** -- `python -m simulator --mode headend --utility all`, reading
-  the utilities' keys from a Render Secret File. Skipped, with a message, when
-  that file is absent. Its state lives on the container's disk and is lost on
-  every restart; that is survivable because it rekeys its live meters
-  (services/ingest/commissioning.py).
-* **jobs** -- `python -m services.jobs`. Deadline sweeps, rollups, partitions,
-  and the commissioning sweep. Scheduled billing stays off unless
-  JOBS_BILLING_ENABLED is set, exactly as locally. `RUN_JOBS=off` skips it.
+* **ingest** on `0.0.0.0:$PORT` -- the public door for telemetry, and the
+  process Render watches. If it exits, the service stops and Render restarts it.
+* **head-end** -- `python -m simulator --mode headend --utility all`, polling
+  that ingest over localhost, with the utilities' keys from the Render Secret
+  File `/etc/secrets/source_keys.json`. Its state lives on the container's disk
+  and is lost on every restart; that is survivable because it rekeys its live
+  meters (services/ingest/commissioning.py).
 
-A background process that exits is restarted after a pause, rather than taking
-the API down with it: a head-end that cannot reach ingest for a moment should
-not cost the portal its uptime.
+**Default -- everything in one service**: the API on `$PORT`, ingest on
+127.0.0.1:8100 beside it, and the head-end. For a host with room for only one
+service.
 
-This is a hosting arrangement, not an architecture: locally each of these is
-its own process, started by hand, and nothing here changes how any of them
-behaves.
+In both shapes the jobs runner (`python -m services.jobs`) starts too unless
+`RUN_JOBS=off`; scheduled billing stays off unless JOBS_BILLING_ENABLED is set.
+A background process that exits is restarted after a pause rather than taking
+the foreground one down with it.
+
+This is a hosting arrangement, not an architecture: locally each of these is its
+own process, started by hand, and nothing here changes how any of them behaves.
 """
 from __future__ import annotations
 
@@ -38,7 +36,6 @@ import time
 from pathlib import Path
 
 PYTHON = sys.executable
-INGEST_PORT = "8100"
 SOURCE_KEYS = Path(os.environ.get("HEADEND_SOURCE_KEYS", "/etc/secrets/source_keys.json"))
 HEADEND_STATE = os.environ.get("HEADEND_STATE_DIR", "/tmp/headend_state")
 RESTART_DELAY = 10
@@ -49,6 +46,10 @@ _children: dict[str, subprocess.Popen] = {}
 
 def log(line: str) -> None:
     print(f"[render_start] {line}", flush=True)
+
+
+def _switch(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() not in ("off", "0", "false", "no")
 
 
 def supervise(name: str, argv: list[str]) -> None:
@@ -64,45 +65,58 @@ def supervise(name: str, argv: list[str]) -> None:
         time.sleep(RESTART_DELAY)
 
 
-def background() -> list[tuple[str, list[str]]]:
-    jobs: list[tuple[str, list[str]]] = [
-        ("ingest", [PYTHON, "-m", "services.ingest", "--host", "127.0.0.1",
-                    "--port", INGEST_PORT]),
-    ]
-    if SOURCE_KEYS.exists():
-        jobs.append(("head-end", [
-            PYTHON, "-m", "simulator", "--mode", "headend", "--utility", "all",
-            "--ingest", f"http://127.0.0.1:{INGEST_PORT}",
-            "--source-keys", str(SOURCE_KEYS),
-            "--state-dir", HEADEND_STATE,
-        ]))
-    else:
+def ingest_argv(host: str, port: str) -> list[str]:
+    return [PYTHON, "-m", "services.ingest", "--host", host, "--port", port]
+
+
+def headend_argv(ingest_port: str) -> list[str] | None:
+    if not SOURCE_KEYS.exists():
         log(f"no head-end keys at {SOURCE_KEYS}; head-end not started")
-    if os.environ.get("RUN_JOBS", "on").strip().lower() not in ("off", "0", "false", "no"):
-        jobs.append(("jobs", [PYTHON, "-m", "services.jobs"]))
-    return jobs
+        return None
+    return [
+        PYTHON, "-m", "simulator", "--mode", "headend", "--utility", "all",
+        "--ingest", f"http://127.0.0.1:{ingest_port}",
+        "--source-keys", str(SOURCE_KEYS),
+        "--state-dir", HEADEND_STATE,
+    ]
 
 
 def main() -> None:
-    for name, argv in background():
-        threading.Thread(target=supervise, args=(name, argv), daemon=True).start()
-
     port = os.environ.get("PORT", "8000")
-    api = subprocess.Popen([
-        PYTHON, "-m", "uvicorn", "services.api.main:app",
-        "--host", "0.0.0.0", "--port", port,
-    ])
+    background: list[tuple[str, list[str]]] = []
+
+    if _switch("RUN_API", "on"):
+        ingest_port = "8100"
+        background.append(("ingest", ingest_argv("127.0.0.1", ingest_port)))
+        foreground_name = "API"
+        foreground = [PYTHON, "-m", "uvicorn", "services.api.main:app",
+                      "--host", "0.0.0.0", "--port", port]
+    else:
+        ingest_port = port
+        foreground_name = "ingest"
+        foreground = ingest_argv("0.0.0.0", port)
+
+    headend = headend_argv(ingest_port)
+    if headend:
+        background.append(("head-end", headend))
+    if _switch("RUN_JOBS", "on"):
+        background.append(("jobs", [PYTHON, "-m", "services.jobs"]))
+
+    log(f"starting {foreground_name} on port {port}")
+    main_proc = subprocess.Popen(foreground)
+    for name, argv in background:
+        threading.Thread(target=supervise, args=(name, argv), daemon=True).start()
 
     def stop(signum, _frame):
         _stopping.set()
-        api.send_signal(signum)
+        main_proc.send_signal(signum)
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    code = api.wait()
+    code = main_proc.wait()
     _stopping.set()
-    log(f"API exited with {code}; stopping the service")
+    log(f"{foreground_name} exited with {code}; stopping the service")
     for proc in _children.values():
         if proc.poll() is None:
             proc.terminate()
