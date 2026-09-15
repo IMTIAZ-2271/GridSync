@@ -353,6 +353,114 @@ async def test_activation_retries_are_capped(conn, client):
     assert "too many" in response.json()["detail"]
 
 
+# ---------------------------------------------------------------------------
+# re-keying a live meter
+# ---------------------------------------------------------------------------
+
+
+async def rekey(client, source: Source, commissioning_id, serial_no: str):
+    return await client.post(
+        f"/v1/source/commissions/{commissioning_id}/rekey",
+        headers=source.headers,
+        json={"serial_no": serial_no},
+    )
+
+
+async def live_offer(conn, device_id, source: Source):
+    now = await conn.fetchval("SELECT now()")
+    return await fresh_offer(
+        conn, device_id, source, status="live",
+        activated_at=now, activation_expires_at=now + timedelta(hours=1),
+        activation_count=1, live_at=now,
+    )
+
+
+async def test_a_live_meter_can_be_rekeyed_by_its_head_end(conn, client):
+    """A head-end that lost its state (a restarted host with no disk) asks for a
+    fresh key. The old one stops working, the new one signs, and the handshake
+    is untouched -- still live, same activation count."""
+    source = await make_source(conn)
+    device_id = await make_meter(conn, await make_site(conn))
+    commissioning_id = await live_offer(conn, device_id, source)
+    old_hash = await conn.fetchval(
+        "SELECT device_key_hash FROM device WHERE device_id = $1", device_id
+    )
+
+    response = await rekey(client, source, commissioning_id,
+                           await serial_of(conn, device_id))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["device_key"].startswith("gsk_")
+    assert body["status"] == "live"
+    stored = await conn.fetchval(
+        "SELECT device_key_hash FROM device WHERE device_id = $1", device_id
+    )
+    assert stored != old_hash
+    assert verify_password(body["device_key"], stored)
+    row = await conn.fetchrow(
+        "SELECT status::text AS status, activation_count FROM device_commissioning "
+        "WHERE commissioning_id = $1", commissioning_id,
+    )
+    assert (row["status"], row["activation_count"]) == ("live", 1)
+
+    accepted = await post_readings(client, device_id, body["device_key"], [a_reading(export_kwh="0")])
+    assert accepted.status_code == 200, accepted.text
+
+
+@pytest.mark.parametrize("status", ["offered", "activated"])
+async def test_only_a_live_meter_is_rekeyed(conn, client, status):
+    """Before live, activation is the way to get a key; rekey would sidestep its
+    window and its cap."""
+    source = await make_source(conn)
+    device_id = await make_meter(conn, await make_site(conn))
+    now = await conn.fetchval("SELECT now()")
+    extra = {} if status == "offered" else dict(
+        activated_at=now, activation_expires_at=now + timedelta(hours=1), activation_count=1,
+    )
+    commissioning_id = await fresh_offer(conn, device_id, source, status=status, **extra)
+
+    response = await rekey(client, source, commissioning_id,
+                           await serial_of(conn, device_id))
+
+    assert response.status_code == 409
+    assert "activate" in response.json()["detail"]
+
+
+async def test_another_sources_live_meter_cannot_be_rekeyed(conn, client):
+    mine, theirs = await make_source(conn), await make_source(conn)
+    device_id = await make_meter(conn, await make_site(conn))
+    commissioning_id = await live_offer(conn, device_id, theirs)
+
+    response = await rekey(client, mine, commissioning_id,
+                           await serial_of(conn, device_id))
+
+    assert response.status_code == 404
+
+
+async def test_rekey_needs_the_meters_serial(conn, client):
+    source = await make_source(conn)
+    device_id = await make_meter(conn, await make_site(conn))
+    commissioning_id = await live_offer(conn, device_id, source)
+
+    response = await rekey(client, source, commissioning_id, "NOT-THIS-METER")
+
+    assert response.status_code == 422
+
+
+async def test_a_retired_meter_cannot_be_rekeyed(conn, client):
+    source = await make_source(conn)
+    device_id = await make_meter(conn, await make_site(conn))
+    commissioning_id = await live_offer(conn, device_id, source)
+    await retire_device(conn, device_id)
+
+    response = await rekey(client, source, commissioning_id,
+                           await serial_of(conn, device_id))
+
+    assert response.status_code == 409
+    assert "retired" in response.json()["detail"]
+
+
 async def test_a_retired_meter_cannot_be_activated(conn, client):
     source = await make_source(conn)
     device_id = await make_meter(conn, await make_site(conn))

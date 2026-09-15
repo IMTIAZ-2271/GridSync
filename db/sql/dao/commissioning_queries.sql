@@ -101,6 +101,31 @@ RETURNING dc.commissioning_id, dc.device_id, dc.activation_expires_at,
           d.interval_minutes;
 
 
+-- name: rekey_live_commissioning
+-- A head-end replaces the key of a LIVE meter it owns, because it lost the one
+-- it had -- a host restarted on an empty disk. The handshake does not move:
+-- the meter is still live, and a rotation is not a new activation, so neither
+-- activation_count nor its window is touched. What records it is the device's
+-- own device_key_rotated_at.
+--
+-- $1 commissioning_id, $2 source_id, $3 serial_no, $4 the new key's hash.
+--
+-- Live only: before that, activation is the way to get a key and carries the
+-- window and cap. Not retired, and the serial must match, for the same reasons
+-- activation checks both.
+UPDATE device d
+SET device_key_hash       = $4,
+    device_key_rotated_at = now()
+FROM device_commissioning dc
+WHERE dc.commissioning_id = $1
+  AND dc.source_id = $2
+  AND dc.status = 'live'
+  AND d.device_id = dc.device_id
+  AND d.removed_at IS NULL
+  AND d.serial_no = $3
+RETURNING dc.commissioning_id, d.device_id, d.interval_minutes;
+
+
 -- name: commissioning_for_source
 -- Why a guarded statement matched nothing. Scoped by source, so another
 -- head-end's handshake reads as not found rather than confirming it exists.

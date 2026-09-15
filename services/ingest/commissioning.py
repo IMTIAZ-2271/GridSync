@@ -5,6 +5,15 @@
        REJECT    POST /v1/source/commissions/{id}/reject     "not my meter"
     3. CONFIRM   POST /v1/ingest/readings                    the first accepted
                                                              batch makes it live
+    4. REKEY     POST /v1/source/commissions/{id}/rekey      a live meter's key,
+                                                             lost, replaced
+
+**Rekey exists because a head-end's disk is not always its own.** A live meter's
+key was shown once; a head-end on a host that restarts empty (a free container)
+would otherwise lose every meter at once and wait for an official to re-offer
+each by hand. The utility's own source key is what authorises it -- the same
+credential that claimed the meter -- and the old device key stops working in
+the same statement, so a rekey never leaves two keys valid.
 
 The head-end polls; GridSync never calls it. A head-end that was down for a day
 catches up by being started -- the same property every job in services/jobs
@@ -169,6 +178,16 @@ class ActivationOut(BaseModel):
     backfill_to: date | None
 
 
+class RekeyOut(BaseModel):
+    commissioning_id: UUID
+    device_id: UUID
+    status: Literal["live"] = "live"
+    #: Shown once, like an activation's. The previous key no longer works.
+    device_key: str
+    interval_minutes: int
+    ingest_path: str = INGEST_PATH
+
+
 class RejectIn(BaseModel):
     #: Why, in the head-end's words. Shown to the district office verbatim.
     detail: str = Field(min_length=1, max_length=500)
@@ -228,7 +247,7 @@ def _why_not_activated(row: asyncpg.Record | None, serial_no: str) -> HTTPExcept
             status_code=409,
             detail=(
                 "this meter is already live; its key is not re-issued through "
-                "activation"
+                "activation -- use rekey"
             ),
         )
     if status in ("failed", "cancelled"):
@@ -296,6 +315,56 @@ async def activate_commission(
         interval_minutes=claimed["interval_minutes"],
         backfill_from=claimed["backfill_from"],
         backfill_to=claimed["backfill_to"],
+    )
+
+
+@router.post("/commissions/{commissioning_id}/rekey", response_model=RekeyOut)
+async def rekey_commission(
+    conn: Conn,
+    source: Source,
+    commissioning_id: UUID,
+    payload: ActivateIn,
+) -> RekeyOut:
+    """Replace the key of a live meter this head-end owns.
+
+    One guarded UPDATE: the new hash replaces the old in the statement that
+    checks the handshake is live, this source's, and the serial matches.
+    """
+    serial_no = payload.serial_no.strip()
+    key = mint_device_key()
+
+    rekeyed = await conn.fetchrow(
+        sql("rekey_live_commissioning"),
+        commissioning_id, source.source_id, serial_no, hash_password(key),
+    )
+    if rekeyed is None:
+        row = await conn.fetchrow(
+            sql("commissioning_for_source"), commissioning_id, source.source_id
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="commissioning not found")
+        if row["removed_at"] is not None:
+            raise HTTPException(status_code=409, detail="this device has been retired")
+        if row["serial_no"] != serial_no:
+            raise HTTPException(
+                status_code=422,
+                detail="serial_no does not match the device this handshake is for",
+            )
+        if row["status"] in ("offered", "activated"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"this meter is '{row['status']}', not live; activate it instead",
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=f"this handshake is '{row['status']}'; the meter must be offered again",
+        )
+
+    return RekeyOut(
+        commissioning_id=rekeyed["commissioning_id"],
+        device_id=rekeyed["device_id"],
+        device_key=key,
+        interval_minutes=rekeyed["interval_minutes"],
     )
 
 

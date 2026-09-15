@@ -338,23 +338,40 @@ async def test_a_lost_key_for_an_activated_meter_is_reissued(conn, source, heade
     assert row["status"] == "live"
 
 
-async def test_a_live_meter_with_no_key_is_reported_not_retried(conn, source, headend, now):
-    """A live meter's key cannot be re-issued through activation. The head-end
-    says so and leaves it -- hammering activate would only collect 409s."""
+async def test_a_live_meter_with_no_key_is_rekeyed_and_delivery_resumes(
+    conn, source, headend, now, tmp_path
+):
+    """The host restarted with an empty disk -- a free container, say. The
+    head-end re-keys every live meter it no longer holds, and delivers again
+    from the offer's own starting point: anything already held comes back as a
+    duplicate, so nothing is lost and nothing is double-counted."""
     source_id, _ = source
     device_id = await make_meter(conn, await make_site(conn), meter_flow="unidirectional")
     db_now = await conn.fetchval("SELECT now()")
-    await offer(
+    commissioning_id = await offer(
         conn, device_id, source_id, status="live",
         activated_at=db_now, activation_expires_at=db_now + timedelta(hours=1),
         activation_count=1, live_at=db_now,
+        offered_at=last_elapsed(now) - 3 * STEP,
     )
 
-    report = await headend().cycle(now=now)
+    first = headend()
+    report = await first.cycle(now=now)
 
-    assert report.activated == 0
-    assert report.orphaned == 1
-    assert await readings(conn, device_id) == []
+    assert report.rekeyed == 1
+    row = await handshake(conn, commissioning_id)
+    assert (row["status"], row["activation_count"]) == ("live", 1)
+    assert len(await readings(conn, device_id)) == 4
+
+    # Wiped again: the same batches go out under the same idempotency keys, so
+    # ingest replays its answer and writes nothing new.
+    first.state.close()
+    (tmp_path / "state.sqlite").unlink()
+    again = await headend().cycle(now=now)
+
+    assert again.rekeyed == 1
+    assert not again.errors
+    assert len(await readings(conn, device_id)) == 4
 
 
 async def test_a_new_handshake_is_a_new_delivery(conn, source, headend, now):

@@ -12,7 +12,7 @@ by being started. Every cycle:
     1. ASK      GET /v1/source/commissions -- what should I be doing?
     2. MATCH    offered and not held          -> activate (or reject the serial)
                 held but no longer listed     -> retired, swapped, lapsed: forget
-                live but not held             -> key lost; say so, do not retry
+                live but not held             -> key lost: rekey, deliver again
     3. DELIVER  for every meter held, the intervals owed since its watermark
 
 **Its own state is a SQLite file** (`headend_state/<utility>.sqlite`,
@@ -20,6 +20,12 @@ gitignored): each meter's device key and the last interval delivered. The key
 is saved the moment activation returns it, because it cannot be fetched again.
 A restart resumes from the watermark instead of re-sending history; re-sending
 would be harmless (ingest answers `duplicate`) but is wasted work.
+
+**Losing that file is survivable.** On a host whose disk does not outlive a
+restart (Render's free tier), every live meter comes back "live but not held".
+The head-end asks ingest to rekey each one with its own source key and delivers
+again from the offer's starting point -- the re-sent batches carry the same
+idempotency keys, so ingest replays its answers and stores nothing twice.
 
 **Where delivery starts.** At the first Dhaka midnight of the offer's history
 window, or -- when the offer names no window, which a swap does when the
@@ -82,6 +88,8 @@ class CycleReport:
     rejected_offers: int = 0
     stopped: int = 0
     went_live: int = 0
+    rekeyed: int = 0
+    #: Live meters with no key here that a rekey could not recover.
     orphaned: int = 0
     accepted: int = 0
     duplicates: int = 0
@@ -92,7 +100,7 @@ class CycleReport:
     @property
     def eventful(self) -> bool:
         return any((self.activated, self.rejected_offers, self.stopped,
-                    self.went_live, self.accepted, self.late, self.rejected,
+                    self.went_live, self.rekeyed, self.accepted, self.late, self.rejected,
                     self.errors))
 
 
@@ -260,13 +268,7 @@ class HeadEnd:
         cid = commission["commissioning_id"]
 
         if commission["status"] == "live":
-            report.orphaned += 1
-            if cid not in self._orphans_reported:
-                self._orphans_reported.add(cid)
-                self.log(
-                    f"  {serial:<22} live, but no key held here -> it cannot be "
-                    "re-issued; GridSync must offer the meter again"
-                )
+            await self._rekey(commission, report)
             return
 
         if commission["status"] == "offered" and any(
@@ -312,6 +314,38 @@ class HeadEnd:
         self.log(
             f"  {serial:<22} activated (key {activation['activation_count']}), {window}"
         )
+
+    async def _rekey(self, commission: dict, report: CycleReport) -> None:
+        """A live meter this head-end owns but holds no key for: its state was
+        lost. Ask for a fresh key and deliver again from the offer's start."""
+        serial = commission["serial_no"]
+        cid = commission["commissioning_id"]
+        response = await self.client.post(
+            f"/v1/source/commissions/{cid}/rekey",
+            headers=self.headers,
+            json={"serial_no": serial},
+        )
+        if response.status_code != 200:
+            report.orphaned += 1
+            if cid not in self._orphans_reported:
+                self._orphans_reported.add(cid)
+                self.log(
+                    f"  {serial:<22} live, no key held, rekey refused "
+                    f"(HTTP {response.status_code}) -> GridSync must offer it again"
+                )
+            return
+        rekeyed = response.json()
+        # Saved before anything else, exactly as an activation's key is.
+        self.state.hold(
+            device_id=commission["device_id"],
+            commissioning_id=cid,
+            serial_no=serial,
+            device_key=rekeyed["device_key"],
+            interval_minutes=rekeyed["interval_minutes"],
+            deliver_from=_deliver_from(commission),
+        )
+        report.rekeyed += 1
+        self.log(f"  {serial:<22} live, key lost -> rekeyed, delivering again")
 
     async def _deliver(self, row: sqlite3.Row, commission: dict, now: datetime,
                        report: CycleReport) -> None:
