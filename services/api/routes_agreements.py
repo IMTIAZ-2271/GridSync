@@ -10,6 +10,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from . import audit
 from .auth import Principal, require_role
 from .db import Conn
 from .notify import notify, notify_site_owner
@@ -97,7 +98,7 @@ async def decide_agreement(
     conn: Conn,
     agreement_id: UUID,
     payload: AgreementStatusUpdate,
-    _: Annotated[Principal, Depends(require_role("government", "admin"))],
+    principal: Annotated[Principal, Depends(require_role("government", "admin"))],
 ) -> Agreement:
     """Approve or terminate a pending agreement.
 
@@ -106,6 +107,9 @@ async def decide_agreement(
     that authorizes it.
     """
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "agreement.status", "net_metering_agreement", agreement_id, payload
+        )
         decided = await conn.fetchval(
             sql("decide_agreement"), agreement_id, payload.status
         )
@@ -524,6 +528,9 @@ async def raise_agreement_work_order(
         )
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "agreement.work_order", "net_metering_agreement", agreement_id, payload
+        )
         try:
             order = await conn.fetchrow(
                 sql("raise_agreement_work_order"),
@@ -588,6 +595,9 @@ async def register_agreement_meter(
     model = (payload.model or "").strip() or None if payload else None
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "agreement.register", "net_metering_agreement", agreement_id, payload
+        )
         company_id = await conn.fetchval(sql("utility_for_site"), row["site_id"])
         try:
             issued = await conn.fetchrow(

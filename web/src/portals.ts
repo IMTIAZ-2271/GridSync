@@ -8,7 +8,7 @@
 
 import { VIEWS, type ViewKey } from "./lib/unread";
 
-export type PortalId = "consumer" | "worker" | "government" | "supplier";
+export type PortalId = "consumer" | "worker" | "government" | "supplier" | "admin";
 
 export interface PortalRoute {
   path: string;
@@ -94,6 +94,21 @@ export const PORTALS: Portal[] = [
       { path: "applications", label: "Applications", viewKey: VIEWS.supplierApplications },
       { path: "issues", label: "Complaints", viewKey: VIEWS.supplierIssues },
       { path: "equipment", label: "Equipment" },
+    ],
+  },
+  {
+    id: "admin",
+    label: "Admin",
+    blurb: "Every account, every table and every change an admin made. Admins can also open the other four portals.",
+    accent: "bg-portal-admin",
+    base: "/admin",
+    routes: [
+      { path: "", label: "Overview" },
+      { path: "accounts", label: "Accounts" },
+      { path: "data", label: "Data" },
+      { path: "work-orders", label: "Work orders" },
+      { path: "approvals", label: "Approvals" },
+      { path: "audit", label: "Audit log" },
     ],
   },
 ];

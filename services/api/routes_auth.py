@@ -32,7 +32,7 @@ from typing import Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 
 from .auth import (
@@ -43,6 +43,7 @@ from .auth import (
     issue_token,
     verify_password,
 )
+from . import login_limits
 from .notify import notify
 from .orgs import (
     NATIONAL_ID_HELP,
@@ -130,8 +131,9 @@ class LoginIn(BaseModel):
     # Plain str, not EmailStr. Login is a lookup, not a validation: rejecting a
     # syntactically odd address here would answer 422 where the honest answer
     # is 401, and EmailStr also refuses reserved domains (.test, .local) that
-    # the citext column accepts perfectly well.
-    email: str
+    # the citext column accepts perfectly well. The length cap is only so an
+    # unauthenticated caller cannot write megabyte rows into login_attempt.
+    email: str = Field(max_length=320)
     password: str
 
 
@@ -278,7 +280,12 @@ async def _token_response_for(
 # --------------------------------------------------------------------------
 
 @router.post("/login", response_model=TokenOut)
-async def login(conn: Conn, payload: LoginIn) -> TokenOut:
+async def login(conn: Conn, payload: LoginIn, request: Request) -> TokenOut:
+    # Before anything else, and before argon2: a locked email or address is
+    # refused with 429 whether or not the account exists. login_limits.py.
+    attempt_id = await login_limits.begin_attempt(
+        conn, payload.email, login_limits.client_ip(request)
+    )
     row = await conn.fetchrow(sql("account_by_email"), payload.email)
 
     # One message for every failure -- unknown email, wrong password, and an
@@ -295,6 +302,9 @@ async def login(conn: Conn, payload: LoginIn) -> TokenOut:
         raise invalid
     if not verify_password(payload.password, row["password_hash"]):
         raise invalid
+    # The password was right, so this is not a guess -- even for an account
+    # that is about to be refused for its status.
+    await login_limits.mark_succeeded(conn, attempt_id)
     if row["status"] != "active":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

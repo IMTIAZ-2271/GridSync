@@ -16,7 +16,7 @@ calls it rather than writing DDL of its own.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import asyncpg
 
@@ -77,3 +77,14 @@ async def ensure_partitions(pool: asyncpg.Pool, months_ahead: int) -> dict[str, 
         "created": len(created),
         "default_partition_rows": int(stray or 0),
     }
+
+
+async def prune_login_attempts(pool: asyncpg.Pool, keep: timedelta) -> dict[str, int]:
+    """Delete sign-in attempts older than `keep`.
+
+    services/api/login_limits.py only ever reads the last fifteen minutes; the
+    table would otherwise grow by one row per sign-in forever. Idempotent.
+    """
+    async with pool.acquire() as conn:
+        deleted = await conn.fetchval(sql("prune_login_attempts"), keep)
+    return {"deleted": int(deleted)}

@@ -25,6 +25,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from . import audit
 from .auth import Principal, require_role
 from .db import Conn
 from .notify import notify
@@ -230,6 +231,9 @@ async def decide_application(
     truthful.
     """
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "solar_application.decision", "solar_application", application_id, payload
+        )
         app = await conn.fetchrow(sql("solar_application_context"), application_id)
         if app is None:
             raise HTTPException(status_code=404, detail="application not found")

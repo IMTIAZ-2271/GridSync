@@ -47,6 +47,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from . import audit
 from .auth import Principal, official_district_scope, require_role
 from .db import Conn
 from .notify import notify
@@ -237,6 +238,9 @@ async def decide_supplier_registration(
     scope = await official_district_scope(conn, principal)
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "supplier.approval", "supplier_profile", account_id, payload
+        )
         before = await conn.fetchrow(sql("supplier_approval_row"), account_id, scope)
         if before is None:
             raise HTTPException(

@@ -9,6 +9,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from . import audit
 from .auth import CurrentAccount, visible_site_or_404
 from .notify import notify
 from .db import Conn
@@ -203,6 +204,9 @@ async def update_issue_status(
         )
 
     async with conn.transaction():
+        await audit.admin_action(
+            conn, principal, "issue.status", "issue", issue_id, payload
+        )
         before = await conn.fetchrow(sql("get_issue"), issue_id)
         if before is None:
             raise HTTPException(status_code=404, detail="issue not found")

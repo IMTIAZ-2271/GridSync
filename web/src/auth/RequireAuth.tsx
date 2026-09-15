@@ -26,6 +26,7 @@ const PORTAL_ROLES: Record<PortalId, Role[]> = {
   worker: ["worker", "admin"],
   government: ["government", "admin"],
   supplier: ["supplier", "admin"],
+  admin: ["admin"],
 };
 
 export function rolesForPortal(id: PortalId): Role[] {

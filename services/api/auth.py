@@ -139,6 +139,16 @@ _REVOKED = HTTPException(
     headers={"WWW-Authenticate": "Bearer"},
 )
 
+#: A token issued before `account.sessions_valid_after`. Distinct from
+#: `_REVOKED` because nobody logged this token out: an administrator ended
+#: every session the account held (a suspension, a password reset, a role
+#: change). The client treats both the same -- back to sign-in.
+_SESSION_ENDED = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="session ended",
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
 #: What an account whose registration has not been approved may still reach.
 #:
 #: A field worker and a supplier's staff account are both decided by a
@@ -219,7 +229,8 @@ async def get_current_account(request: Request) -> Principal:
                COALESCE(worker_profile.approval_status,
                         supplier_profile.approval_status)::text
                    AS approval_status,
-               (revoked_token.jti IS NOT NULL) AS token_revoked
+               (revoked_token.jti IS NOT NULL) AS token_revoked,
+               account.sessions_valid_after
         FROM account
         LEFT JOIN revoked_token ON revoked_token.jti = $2::uuid
         LEFT JOIN worker_profile
@@ -235,6 +246,13 @@ async def get_current_account(request: Request) -> Principal:
         raise _UNAUTHENTICATED
     if row["token_revoked"]:
         raise _REVOKED
+    # Every session this account held before the cut-off is over. `iat` is
+    # whole seconds, so compare against the cut-off's whole second: a token
+    # issued in the same second survives, which is what keeps a login right
+    # after a password reset from being refused (migration a7c3e9f15b20).
+    cutoff = row["sessions_valid_after"]
+    if cutoff is not None and int(payload.get("iat", 0)) < int(cutoff.timestamp()):
+        raise _SESSION_ENDED
     if row["status"] != "active":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

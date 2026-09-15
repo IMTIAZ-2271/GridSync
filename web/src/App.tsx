@@ -26,6 +26,12 @@ import SupplierApplications from "./routes/SupplierApplications";
 import SupplierDispatch from "./routes/SupplierDispatch";
 import SupplierIssues from "./routes/SupplierIssues";
 import SupplierEquipment from "./routes/SupplierEquipment";
+import AdminOverview from "./routes/AdminOverview";
+import AdminAccounts from "./routes/AdminAccounts";
+import AdminAudit from "./routes/AdminAudit";
+import AdminData from "./routes/AdminData";
+import AdminWorkOrders from "./routes/AdminWorkOrders";
+import AdminApprovals from "./routes/AdminApprovals";
 
 /**
  * The consumer portal lived at /customer until 2026-08-27. Redirect the whole
@@ -108,6 +114,15 @@ export default function App() {
             <Route path="applications" element={<SupplierApplications />} />
             <Route path="issues" element={<SupplierIssues />} />
             <Route path="equipment" element={<SupplierEquipment />} />
+          </Route>
+
+          <Route path="admin">
+            <Route index element={<AdminOverview />} />
+            <Route path="accounts" element={<AdminAccounts />} />
+            <Route path="data" element={<AdminData />} />
+            <Route path="work-orders" element={<AdminWorkOrders />} />
+            <Route path="approvals" element={<AdminApprovals />} />
+            <Route path="audit" element={<AdminAudit />} />
           </Route>
         </Route>
       </Route>

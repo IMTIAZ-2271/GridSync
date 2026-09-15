@@ -824,6 +824,203 @@ export type AgreementDecision = "active" | "terminated";
  */
 export type Role = "consumer" | "worker" | "government" | "supplier" | "admin";
 
+// ---------------------------------------------------------------------------
+// Admin panel (services/api/routes_admin_accounts.py). Admin only.
+// ---------------------------------------------------------------------------
+
+export type AccountStatus = "active" | "suspended" | "closed";
+
+export interface AdminAccount {
+  account_id: string;
+  email: string;
+  full_name: string;
+  phone: string | null;
+  national_id: string | null;
+  role: Role;
+  status: AccountStatus;
+  created_at: Timestamp;
+  /** Tokens issued before this are refused. Null: no admin has ended them. */
+  sessions_valid_after: Timestamp | null;
+  /** The district the account's role carries; null for a household or admin. */
+  district: string | null;
+  approval_status: ApprovalStatus | null;
+  site_count: number;
+}
+
+export interface AdminAccountPage {
+  items: AdminAccount[];
+  total: number;
+}
+
+export interface AdminConnection {
+  point_id: string;
+  label: string;
+  reference: string | null;
+  meter_serial: string | null;
+  /** Running credit balance: the connection's newest ledger entry. */
+  balance_kwh: Decimal;
+  balance_amount: Decimal;
+}
+
+export interface AdminAccountDetail extends AdminAccount {
+  sites: {
+    site_id: string;
+    label: string;
+    district: string;
+    status: string;
+    connection_count: number;
+    connections: AdminConnection[];
+  }[];
+}
+
+export interface LedgerEntry {
+  entry_id: number;
+  entry_type: "earned" | "applied" | "expired" | "adjustment" | "cashout";
+  kwh_delta: Decimal;
+  amount_delta: Decimal;
+  balance_kwh_after: Decimal;
+  balance_amount_after: Decimal;
+  period_id: string | null;
+  bill_id: string | null;
+  expires_on: DateOnly | null;
+  note: string | null;
+  created_at: Timestamp;
+}
+
+export interface AdminBill {
+  bill_id: string;
+  period_start: DateOnly;
+  period_end: DateOnly;
+  status: BillStatus;
+  amount_due: Decimal;
+  gross_amount: Decimal;
+  issued_at: Timestamp;
+  voided_by_bill_id: string | null;
+  /** Not void, the connection's latest bill, no payments. */
+  reissuable: boolean;
+}
+
+export interface BillReissue {
+  voided_bill_id: string;
+  bill_id: string;
+  period_start: DateOnly;
+  previous_amount_due: Decimal;
+  amount_due: Decimal;
+  previous_gross_amount: Decimal;
+  gross_amount: Decimal;
+  previous_credit_applied_kwh: Decimal;
+  credit_applied_kwh: Decimal;
+}
+
+export interface PointLedger {
+  billing_point_id: string;
+  balance_kwh: Decimal;
+  balance_amount: Decimal;
+  entries: LedgerEntry[];
+}
+
+export interface AuditEntry {
+  audit_id: number;
+  occurred_at: Timestamp;
+  actor_account_id: string | null;
+  actor_email: string | null;
+  actor_name: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  /** A readable name for the entity -- the email, for an account. */
+  entity_label: string | null;
+  /** JSON text exactly as stored. */
+  before_state: string | null;
+  after_state: string | null;
+  client_ip: string | null;
+}
+
+export interface AuditPage {
+  items: AuditEntry[];
+  total: number;
+}
+
+export interface AdminOverview {
+  accounts_by_role: Partial<Record<Role, number>>;
+  accounts_by_status: Partial<Record<AccountStatus, number>>;
+  pending_workers: number;
+  pending_suppliers: number;
+  open_meter_applications: number;
+  pending_agreements: number;
+  recent_audit: AuditEntry[];
+}
+
+export interface BrowseColumn {
+  name: string;
+  /** The type as PostgreSQL spells it, e.g. "numeric(12,4)". */
+  type: string;
+  nullable: boolean;
+  primary_key: boolean;
+  /** A credential hash: never sent, always null in rows. */
+  masked: boolean;
+}
+
+export interface BrowseTable {
+  name: string;
+  kind: "table" | "partitioned";
+  /** Planner estimate; null for a table never analysed. */
+  approx_rows: number | null;
+  columns: BrowseColumn[];
+  /** Rows are served only when filtered on this column. */
+  required_filter: string | null;
+}
+
+/** A cell: NUMERIC, timestamps, UUIDs and big integers arrive as strings. */
+export type BrowseValue = string | number | boolean | null | BrowseValue[];
+
+export interface BrowsePage {
+  table: string;
+  columns: string[];
+  masked: string[];
+  rows: Record<string, BrowseValue>[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BrowseQuery {
+  limit?: number;
+  offset?: number;
+  filter_col?: string;
+  filter_val?: string;
+  descending?: boolean;
+}
+
+export interface AdminAccountQuery {
+  q?: string;
+  role?: Role;
+  status?: AccountStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AdminAuditQuery {
+  actor?: string;
+  entity_type?: string;
+  entity_id?: string;
+  action?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** Drops empty values so the API sees absent filters as absent. */
+function queryString(params: object): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      search.set(key, String(value));
+    }
+  }
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
 export type WorkerKind = "government" | "private";
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -1718,6 +1915,65 @@ export const api = {
   /** Every reporting device in the fleet. Government and supplier only. */
   fleetDevices: () => request<SiteDevice[]>("/devices"),
 
+  // -- admin --------------------------------------------------------------
+  adminOverview: () => request<AdminOverview>("/admin/overview"),
+  adminAccounts: (query: AdminAccountQuery) =>
+    request<AdminAccountPage>(`/admin/accounts${queryString(query)}`),
+  adminAccount: (accountId: string) =>
+    request<AdminAccountDetail>(`/admin/accounts/${accountId}`),
+  adminSetStatus: (accountId: string, body: { status: AccountStatus; reason: string }) =>
+    request<AdminAccount>(`/admin/accounts/${accountId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminRevokeSessions: (accountId: string, body: { reason: string }) =>
+    request<{ account_id: string; sessions_valid_after: Timestamp }>(
+      `/admin/accounts/${accountId}/sessions/revoke`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  adminResetPassword: (accountId: string, body: { password: string; reason: string }) =>
+    request<AdminAccount>(`/admin/accounts/${accountId}/password`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminSetAdmin: (accountId: string, body: { granted: boolean; reason: string }) =>
+    request<AdminAccount>(`/admin/accounts/${accountId}/admin`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  adminAudit: (query: AdminAuditQuery) =>
+    request<AuditPage>(`/admin/audit${queryString(query)}`),
+  adminTables: () => request<BrowseTable[]>("/admin/tables"),
+  adminPointLedger: (pointId: string) =>
+    request<PointLedger>(`/admin/billing-points/${pointId}/ledger`),
+  adminPointBills: (pointId: string) =>
+    request<AdminBill[]>(`/admin/billing-points/${pointId}/bills`),
+  adminReissueBill: (billId: string, body: { reason: string; merge_late_readings: boolean }) =>
+    request<BillReissue>(`/admin/bills/${billId}/reissue`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminAdjustCredit: (
+    pointId: string,
+    body: { kwh_delta: string; amount_delta: string; reason: string },
+  ) =>
+    request<{ entry_id: number; balance_kwh: Decimal; balance_amount: Decimal }>(
+      `/admin/billing-points/${pointId}/credit-adjustments`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  adminInterveneWorkOrder: (
+    orderId: string,
+    body: { action: "release" | "cancel"; reason: string },
+  ) =>
+    request<{ order_id: string; status: WorkOrderStatus; released: string[] }>(
+      `/admin/work-orders/${orderId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+  adminTableRows: (table: string, query: BrowseQuery) =>
+    request<BrowsePage>(
+      `/admin/tables/${encodeURIComponent(table)}/rows${queryString(query)}`,
+    ),
+
   /** Every live billing meter and its connection to its utility's network.
    *  Officials see their district; suppliers the fleet. */
   commissioning: () => request<CommissioningOverview>("/commissioning"),
@@ -1817,6 +2073,15 @@ export const queryKeys = {
   consumptionLimit: (id: string) =>
     ["sites", id, "consumption-limit"] as const,
   fleetDevices: () => ["devices"] as const,
+  adminOverview: () => ["admin", "overview"] as const,
+  adminAccounts: (query: AdminAccountQuery) => ["admin", "accounts", query] as const,
+  adminAccount: (accountId: string) => ["admin", "account", accountId] as const,
+  adminAudit: (query: AdminAuditQuery) => ["admin", "audit", query] as const,
+  adminTables: () => ["admin", "tables"] as const,
+  adminPointLedger: (pointId: string) => ["admin", "ledger", pointId] as const,
+  adminPointBills: (pointId: string) => ["admin", "bills", pointId] as const,
+  adminTableRows: (table: string, query: BrowseQuery) =>
+    ["admin", "tables", table, query] as const,
   commissioning: () => ["commissioning"] as const,
   issues: () => ["issues"] as const,
   issueTargets: (siteId: string) =>
