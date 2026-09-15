@@ -3,10 +3,7 @@
  *
  * GridSync has one database and four audiences with very different views of
  * it: a household sees its own bill, a field worker sees a job queue, a
- * regulator sees district aggregates, and a supplier sees the fleet. The
- * switcher in the layout is currently just navigation -- there is no auth, so
- * nothing here is enforced. When auth lands, this table is the natural place
- * to hang the role each portal requires, and the API is where it gets checked.
+ * regulator sees district aggregates, and a supplier sees the fleet.
  */
 
 import { VIEWS, type ViewKey } from "./lib/unread";

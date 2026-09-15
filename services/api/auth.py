@@ -202,7 +202,6 @@ async def get_current_account(request: Request) -> Principal:
 
     raw_jti = payload.get("jti")
     jti = UUID(raw_jti) if raw_jti else None
-
     pool: asyncpg.Pool = request.app.state.pool
     # The two profile joins are one-row-or-none and mutually exclusive -- an
     # account has one role -- so COALESCE picks whichever applies and leaves
